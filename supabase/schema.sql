@@ -40,9 +40,12 @@ create table if not exists room_members (
   room_id uuid not null references rooms(id) on delete cascade,
   user_uuid text not null,
   display_name text not null,
+  avatar_url text,
   joined_at timestamptz not null default now(),
   primary key (room_id, user_uuid)
 );
+
+alter table room_members add column if not exists avatar_url text;
 
 create table if not exists ratings (
   id uuid primary key default gen_random_uuid(),

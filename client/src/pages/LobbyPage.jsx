@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiGet, apiPost } from "../lib/api";
-import { getIdentity, saveIdentity } from "../lib/identity";
+import { getDefaultAvatar, getIdentity, saveIdentity } from "../lib/identity";
 import { supabase } from "../lib/supabase";
+import { Plus, Search, RefreshCw, User, Layout, Hash, Globe, Lock } from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
 
 export default function LobbyPage() {
   const navigate = useNavigate();
   const [identity, setIdentity] = useState(getIdentity());
 
   const [displayName, setDisplayName] = useState(identity?.displayName || "");
+  const [avatarUrl, setAvatarUrl] = useState(identity?.avatarUrl || "");
   const [lists, setLists] = useState([]);
   const [rooms, setRooms] = useState([]);
 
@@ -17,6 +20,7 @@ export default function LobbyPage() {
   const [selectedList, setSelectedList] = useState("");
   const [isPublic, setIsPublic] = useState(true);
   const [inviteCode, setInviteCode] = useState("");
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     loadLists();
@@ -36,11 +40,14 @@ export default function LobbyPage() {
   }
 
   async function loadPublicRooms() {
+    setLoading(true);
     try {
       const data = await apiGet("/api/rooms/public");
       setRooms(data.rooms || []);
     } catch {
       setRooms([]);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -51,9 +58,19 @@ export default function LobbyPage() {
       return null;
     }
 
-    const saved = saveIdentity(trimmed);
+    const saved = saveIdentity({
+      displayName: trimmed,
+      avatarUrl,
+    });
     setIdentity(saved);
+    setAvatarUrl(saved.avatarUrl);
     return saved;
+  }
+
+  function saveProfile() {
+    const saved = ensureIdentity();
+    if (!saved) return;
+    alert("Profile saved");
   }
 
   async function createRoom() {
@@ -61,15 +78,20 @@ export default function LobbyPage() {
     if (!currentIdentity) return;
     if (!newRoomName.trim() || !selectedList) return;
 
-    const data = await apiPost("/api/rooms", {
-      name: newRoomName.trim(),
-      listId: selectedList,
-      userUuid: currentIdentity.uuid,
-      displayName: currentIdentity.displayName,
-      isPublic,
-    });
+    try {
+      const data = await apiPost("/api/rooms", {
+        name: newRoomName.trim(),
+        listId: selectedList,
+        userUuid: currentIdentity.uuid,
+        displayName: currentIdentity.displayName,
+        avatarUrl: currentIdentity.avatarUrl,
+        isPublic,
+      });
 
-    navigate(`/room/${data.room.id}`);
+      navigate(`/room/${data.room.id}`);
+    } catch (err) {
+      alert(err.message || "Failed to create room");
+    }
   }
 
   async function joinByCode() {
@@ -120,137 +142,244 @@ export default function LobbyPage() {
   }
 
   return (
-    <main className="lobby-page">
-      <div className="lobby-shell">
-        <header className="hero lobby-hero">
-          <div className="hero-copy">
-            <span className="eyebrow">Anime Opening Rater</span>
-            <h1>Watch. Rate. Rank.</h1>
-            <p>Create a room, invite your friends, and decide the best anime opening together.</p>
-          </div>
-          <div className="lobby-hero-meta stack">
-            <div className="pill">{identity?.displayName || "Guest"}</div>
-            <div className="pill host">{rooms.length} public rooms</div>
-          </div>
-        </header>
+    <div className="max-w-6xl mx-auto px-4 py-12">
+      <header className="mb-12 text-center">
+        <motion.div
+          initial={{ scale: 0.9, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          className="inline-block mb-4"
+        >
+          <span className="pill bg-brand-500/10 text-brand-400 border-brand-500/20 px-4 py-1.5 text-sm">
+            Anime Opening Rater
+          </span>
+        </motion.div>
+        <h1 className="text-5xl font-extrabold tracking-tight mb-4 bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
+          Watch. Rate. Rank.
+        </h1>
+        <p className="text-slate-400 text-lg max-w-2xl mx-auto">
+          Create a room, invite your friends, and decide the best anime opening together in real-time.
+        </p>
+      </header>
 
-        <section className="lobby-command-grid">
-          <div className="lobby-left-column stack">
-            <section className="card stack lobby-identity-card">
-              <div className="section-head">
-                <h3>Your Identity</h3>
-                <span className="pill">{displayName.trim() ? "Ready" : "Required"}</span>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Left Column */}
+        <div className="lg:col-span-4 space-y-6">
+          <section className="card">
+            <div className="flex items-center gap-2 mb-4">
+              <User className="w-5 h-5 text-brand-400" />
+              <h3 className="text-lg font-bold">Your Identity</h3>
+            </div>
+            <p className="muted mb-4">Set your player name before joining rooms.</p>
+            <div className="flex items-center gap-3 mb-4">
+              <img
+                src={avatarUrl.trim() || getDefaultAvatar(displayName)}
+                alt="Avatar preview"
+                className="w-12 h-12 rounded-full object-cover border border-slate-700 bg-slate-900"
+                referrerPolicy="no-referrer"
+              />
+              <div className="text-xs text-slate-500">
+                Your avatar appears in the room and chat.
               </div>
-              <p className="muted">Set your player name before creating or joining rooms.</p>
+            </div>
+            <div className="relative">
               <input
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder="Enter display name..."
+                className="pl-10"
               />
-            </section>
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+            </div>
+            <input
+              value={avatarUrl}
+              onChange={(e) => setAvatarUrl(e.target.value)}
+              placeholder="Avatar URL (optional)"
+              className="mt-3"
+            />
+            <button
+              className="btn-secondary w-full mt-3"
+              onClick={saveProfile}
+              disabled={!displayName.trim()}
+            >
+              Save profile
+            </button>
+          </section>
 
-            <section className="card stack lobby-actions-card">
-              <h3>Start Session</h3>
-              <p className="muted">Create a room with your list setup, or build a list first.</p>
-              <div className="lobby-action-grid">
-                <button onClick={() => setShowCreateModal(true)} disabled={!displayName.trim()}>
-                  Create New Room
-                </button>
-                <button className="btn-secondary" onClick={() => navigate("/create-list")}>
-                  Create Custom List
-                </button>
+          <section className="card">
+            <div className="flex items-center gap-2 mb-4">
+              <Plus className="w-5 h-5 text-brand-400" />
+              <h3 className="text-lg font-bold">Start Session</h3>
+            </div>
+            <div className="space-y-3">
+              <button 
+                className="btn-primary w-full flex items-center justify-center gap-2"
+                onClick={() => setShowCreateModal(true)} 
+                disabled={!displayName.trim()}
+              >
+                <Plus className="w-4 h-4" />
+                Create New Room
+              </button>
+              <button 
+                className="btn-secondary w-full flex items-center justify-center gap-2"
+                onClick={() => navigate("/create-list")}
+              >
+                <Layout className="w-4 h-4" />
+                Create Custom List
+              </button>
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="flex items-center gap-2 mb-4">
+              <Hash className="w-5 h-5 text-brand-400" />
+              <h3 className="text-lg font-bold">Join Private Room</h3>
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+                placeholder="Invite code"
+                className="font-mono uppercase"
+              />
+              <button className="btn-secondary" onClick={joinByCode}>Join</button>
+            </div>
+          </section>
+        </div>
+
+        {/* Right Column */}
+        <div className="lg:col-span-8">
+          <section className="card h-full">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-2">
+                <Globe className="w-5 h-5 text-brand-400" />
+                <h3 className="text-lg font-bold">Active Public Rooms</h3>
               </div>
-            </section>
-
-            <section className="card stack">
-              <h3>Join Private Room</h3>
-              <p className="muted">Got a room code? Join directly.</p>
-              <div className="row gap lobby-join-row">
-                <input
-                  value={inviteCode}
-                  onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
-                  placeholder="Invite code"
-                />
-                <button className="btn-secondary" onClick={joinByCode}>Join</button>
-              </div>
-            </section>
-          </div>
-
-          <section className="card stack lobby-rooms-card">
-            <div className="section-head">
-              <h3>Active Public Rooms</h3>
-              <button className="btn-ghost" onClick={loadPublicRooms}>Refresh</button>
+              <button 
+                className="btn-ghost flex items-center gap-2 text-sm" 
+                onClick={loadPublicRooms}
+                disabled={loading}
+              >
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
             </div>
 
             {rooms.length === 0 ? (
-              <p className="empty-state">No public rooms active. Create one.</p>
+              <div className="empty-state">
+                <Globe className="w-12 h-12 text-slate-800 mx-auto mb-4" />
+                <p>No public rooms active. Be the first to create one!</p>
+              </div>
             ) : (
-              <div className="public-room-grid">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {rooms.map((room) => (
-                  <button
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
                     key={room.id}
-                    className="room-card lobby-room-card"
+                    className="sub-card text-left hover:border-brand-500/50 transition-colors group"
                     onClick={() => {
                       const currentIdentity = ensureIdentity();
                       if (!currentIdentity) return;
                       navigate(`/room/${room.id}`);
                     }}
                   >
-                    <div className="room-card-title-row">
-                      <strong>{room.name}</strong>
-                      <span className="room-card-badge">Public</span>
+                    <div className="flex justify-between items-start mb-2">
+                      <strong className="text-lg group-hover:text-brand-400 transition-colors">{room.name}</strong>
+                      <span className="pill text-[10px] py-0.5">Public</span>
                     </div>
-                    <div className="room-card-meta-row">
-                      <p>Code: {room.invite_code}</p>
-                      <small>{room.lists?.name || "Custom list"}</small>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 text-sm text-slate-400">
+                        <Hash className="w-3 h-3" />
+                        <span>Code: {room.invite_code}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-slate-400">
+                        <Layout className="w-3 h-3" />
+                        <span>{room.lists?.name || "Custom list"}</span>
+                      </div>
                     </div>
-                  </button>
+                  </motion.button>
                 ))}
               </div>
             )}
           </section>
-        </section>
+        </div>
       </div>
 
-      {showCreateModal && (
-        <div className="modal-overlay">
-          <div className="modal-card stack">
-            <h3>Create Room</h3>
-            <input
-              value={newRoomName}
-              onChange={(e) => setNewRoomName(e.target.value)}
-              placeholder="Room name"
+      {/* Create Room Modal */}
+      <AnimatePresence>
+        {showCreateModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+              onClick={() => setShowCreateModal(false)}
             />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="card w-full max-w-md relative z-10"
+            >
+              <h3 className="text-xl font-bold mb-6">Create New Room</h3>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm text-slate-400">Room Name</label>
+                  <input
+                    value={newRoomName}
+                    onChange={(e) => setNewRoomName(e.target.value)}
+                    placeholder="e.g. Anime Night with Friends"
+                  />
+                </div>
 
-            <select value={selectedList} onChange={(e) => setSelectedList(e.target.value)}>
-              <option value="">Choose a list...</option>
-              {lists.map((list) => (
-                <option key={list.id} value={list.id}>{list.name}</option>
-              ))}
-            </select>
+                <div className="space-y-2">
+                  <label className="text-sm text-slate-400">Select Opening List</label>
+                  <select value={selectedList} onChange={(e) => setSelectedList(e.target.value)}>
+                    <option value="">Choose a list...</option>
+                    {lists.map((list) => (
+                      <option key={list.id} value={list.id}>{list.name}</option>
+                    ))}
+                  </select>
+                  {lists.length === 0 && (
+                    <button 
+                      className="text-xs text-brand-400 hover:text-brand-300 underline" 
+                      onClick={generateSampleList}
+                    >
+                      Generate Top MAL sample list
+                    </button>
+                  )}
+                </div>
 
-            {lists.length === 0 && (
-              <button className="btn-ghost" onClick={generateSampleList}>
-                Generate Top MAL sample list
-              </button>
-            )}
+                <div className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-lg">
+                  <input
+                    type="checkbox"
+                    id="is-public"
+                    checked={isPublic}
+                    onChange={(e) => setIsPublic(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-brand-500 focus:ring-brand-500"
+                  />
+                  <label htmlFor="is-public" className="text-sm font-medium flex items-center gap-2 cursor-pointer">
+                    {isPublic ? <Globe className="w-4 h-4 text-brand-400" /> : <Lock className="w-4 h-4 text-slate-400" />}
+                    Public room (visible in lobby)
+                  </label>
+                </div>
 
-            <label className="row gap center">
-              <input
-                type="checkbox"
-                checked={isPublic}
-                onChange={(e) => setIsPublic(e.target.checked)}
-              />
-              Public room
-            </label>
-
-            <div className="row gap">
-              <button className="btn-ghost" onClick={() => setShowCreateModal(false)}>Cancel</button>
-              <button onClick={createRoom} disabled={!newRoomName.trim() || !selectedList}>Launch Room</button>
-            </div>
+                <div className="flex gap-3 pt-4">
+                  <button className="btn-ghost flex-1" onClick={() => setShowCreateModal(false)}>Cancel</button>
+                  <button 
+                    className="btn-primary flex-1" 
+                    onClick={createRoom} 
+                    disabled={!newRoomName.trim() || !selectedList}
+                  >
+                    Launch Room
+                  </button>
+                </div>
+              </div>
+            </motion.div>
           </div>
-        </div>
-      )}
-    </main>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }

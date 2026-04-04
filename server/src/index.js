@@ -315,7 +315,7 @@ app.get("/api/rooms/by-code/:code", async (req, res) => {
 app.post("/api/rooms", async (req, res) => {
   if (!ensureSupabase(res)) return;
 
-  const { name, listId, userUuid, displayName, isPublic } = req.body;
+  const { name, listId, userUuid, displayName, avatarUrl, isPublic } = req.body;
   if (!name || !listId || !userUuid || !displayName) {
     return res.status(400).json({ error: "Missing required fields" });
   }
@@ -337,11 +337,21 @@ app.post("/api/rooms", async (req, res) => {
 
   if (roomError) return res.status(500).json({ error: roomError.message });
 
-  await supabaseAdmin.from("room_members").upsert({
+  const membershipPayload = {
     room_id: room.id,
     user_uuid: userUuid,
     display_name: displayName,
-  });
+    avatar_url: String(avatarUrl || "").trim() || null,
+  };
+
+  const { error: memberError } = await supabaseAdmin.from("room_members").upsert(membershipPayload);
+  if (memberError && String(memberError.message || "").toLowerCase().includes("avatar_url")) {
+    await supabaseAdmin.from("room_members").upsert({
+      room_id: room.id,
+      user_uuid: userUuid,
+      display_name: displayName,
+    });
+  }
 
   res.status(201).json({ room });
 });
