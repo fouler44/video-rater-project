@@ -23,9 +23,9 @@ export default function CreateListForm({ identity, onListCreated, availableLists
   const editableLists = useMemo(
     () =>
       (availableLists || []).filter(
-        (list) => !list.is_preset && list.created_by === identity.uuid,
+        (list) => !list.is_preset && list.created_by === identity.userId,
       ),
-    [availableLists, identity.uuid],
+      [availableLists, identity.userId],
   );
 
   useEffect(() => {
@@ -54,7 +54,7 @@ export default function CreateListForm({ identity, onListCreated, availableLists
         .from("lists")
         .insert({
           name: finalName,
-          created_by: identity.uuid,
+          created_by: identity.userId,
           is_preset: true,
         })
         .select("id,name")
@@ -133,7 +133,7 @@ export default function CreateListForm({ identity, onListCreated, availableLists
         .from("lists")
         .insert({
           name: listName.trim(),
-          created_by: identity.uuid,
+          created_by: identity.userId,
           is_preset: false,
         })
         .select("id,name")
@@ -164,7 +164,7 @@ export default function CreateListForm({ identity, onListCreated, availableLists
         .from("lists")
         .update({ name: listName.trim() })
         .eq("id", editingListId)
-        .eq("created_by", identity.uuid)
+        .eq("created_by", identity.userId)
         .eq("is_preset", false);
 
       if (listError) throw listError;

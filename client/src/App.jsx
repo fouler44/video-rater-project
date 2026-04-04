@@ -4,6 +4,7 @@ import LobbyPage from "./pages/LobbyPage";
 import RoomPage from "./pages/RoomPage";
 import RankingsPage from "./pages/RankingsPage";
 import CreateListPage from "./pages/CreateListPage";
+import AuthPage from "./pages/AuthPage";
 
 function PageWrapper({ children }) {
   return (
@@ -26,6 +27,7 @@ export default function App() {
     <AnimatePresence mode="wait">
       <Routes location={location} key={location.pathname}>
         <Route path="/" element={<PageWrapper><LobbyPage /></PageWrapper>} />
+        <Route path="/auth" element={<PageWrapper><AuthPage /></PageWrapper>} />
         <Route path="/create-list" element={<PageWrapper><CreateListPage /></PageWrapper>} />
         <Route path="/room/:roomId" element={<PageWrapper><RoomPage /></PageWrapper>} />
         <Route path="/room/:roomId/rankings" element={<PageWrapper><RankingsPage /></PageWrapper>} />

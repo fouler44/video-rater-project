@@ -86,7 +86,7 @@ export default function RankingsPage() {
             (item) =>
               item.list_opening_id === opening.id &&
               item.ranking_type === "personal" &&
-              item.user_uuid === identity?.uuid
+              item.user_uuid === identity?.userId
           );
 
           return {
@@ -104,7 +104,7 @@ export default function RankingsPage() {
         const groupAvg = scoped.length
           ? scoped.reduce((sum, item) => sum + item.score, 0) / scoped.length
           : 0;
-        const myScore = scoped.find((item) => item.user_uuid === identity?.uuid)?.score ?? null;
+        const myScore = scoped.find((item) => item.user_uuid === identity?.userId)?.score ?? null;
         return {
           ...opening,
           groupAvg,
@@ -112,7 +112,7 @@ export default function RankingsPage() {
         };
       })
       .sort((a, b) => b.groupAvg - a.groupAvg);
-  }, [openings, ratings, storedRankings, identity?.uuid]);
+  }, [openings, ratings, storedRankings, identity?.userId]);
 
   if (loading) return <div className="flex items-center justify-center min-h-screen"><RefreshCw className="animate-spin text-brand-500" /></div>;
 

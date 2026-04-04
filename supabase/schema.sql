@@ -1,5 +1,33 @@
 create extension if not exists "pgcrypto";
 
+create table if not exists app_users (
+  id uuid primary key default gen_random_uuid(),
+  username text not null unique,
+  display_name text not null,
+  avatar_url text,
+  role text not null default 'user' check (role in ('user', 'admin')),
+  legacy_uuid text unique,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists app_user_credentials (
+  user_id uuid primary key references app_users(id) on delete cascade,
+  password_hash text not null,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists app_user_sessions (
+  token text primary key,
+  user_id uuid not null references app_users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  last_seen_at timestamptz not null default now()
+);
+
+create index if not exists idx_app_user_sessions_user_id on app_user_sessions(user_id);
+create index if not exists idx_app_user_sessions_expires_at on app_user_sessions(expires_at);
+
 create table if not exists lists (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -27,10 +55,11 @@ create table if not exists rooms (
   name text not null,
   list_id uuid not null references lists(id),
   host_uuid text not null,
+  owner_user_id uuid not null references app_users(id) on delete restrict,
   is_public boolean not null default true,
   invite_code text not null unique,
   current_opening_index int not null default 0,
-  status text not null default 'active' check (status in ('active', 'finished')),
+  status text not null default 'waiting' check (status in ('waiting', 'playing', 'finished')),
   created_at timestamptz not null default now()
 );
 
@@ -39,6 +68,7 @@ create index if not exists idx_rooms_public_status on rooms(is_public, status);
 create table if not exists room_members (
   room_id uuid not null references rooms(id) on delete cascade,
   user_uuid text not null,
+  user_id uuid references app_users(id) on delete cascade,
   display_name text not null,
   avatar_url text,
   joined_at timestamptz not null default now(),
@@ -52,6 +82,7 @@ create table if not exists ratings (
   room_id uuid not null references rooms(id) on delete cascade,
   list_opening_id uuid not null references list_openings(id) on delete cascade,
   user_uuid text not null,
+  user_id uuid references app_users(id) on delete cascade,
   score int not null check (score between 1 and 10),
   submitted_at timestamptz not null default now(),
   unique (room_id, list_opening_id, user_uuid)
@@ -59,12 +90,24 @@ create table if not exists ratings (
 
 create index if not exists idx_ratings_room_opening on ratings(room_id, list_opening_id);
 
+create table if not exists room_messages (
+  id uuid primary key default gen_random_uuid(),
+  room_id uuid not null references rooms(id) on delete cascade,
+  user_uuid text not null,
+  user_name text not null,
+  content text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_room_messages_room_created on room_messages(room_id, created_at);
+
 create table if not exists room_rankings (
   id uuid primary key default gen_random_uuid(),
   room_id uuid not null references rooms(id) on delete cascade,
   list_opening_id uuid not null references list_openings(id) on delete cascade,
   ranking_type text not null check (ranking_type in ('group', 'personal')),
   user_uuid text,
+  user_id uuid references app_users(id) on delete cascade,
   score numeric(5,2) not null,
   created_at timestamptz not null default now()
 );
@@ -73,8 +116,12 @@ create index if not exists idx_room_rankings_room on room_rankings(room_id, rank
 
 -- RLS intentionally disabled for side-project simplicity
 alter table lists disable row level security;
+alter table app_users disable row level security;
+alter table app_user_credentials disable row level security;
+alter table app_user_sessions disable row level security;
 alter table list_openings disable row level security;
 alter table rooms disable row level security;
 alter table room_members disable row level security;
 alter table ratings disable row level security;
+alter table room_messages disable row level security;
 alter table room_rankings disable row level security;

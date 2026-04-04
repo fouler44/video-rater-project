@@ -1,5 +1,3 @@
-import { v4 as uuidv4 } from "uuid";
-
 const STORAGE_KEY = "aor_identity";
 const DEFAULT_AVATAR_BASE = "https://api.dicebear.com/9.x/thumbs/svg";
 
@@ -23,40 +21,65 @@ export function getIdentity() {
 
   try {
     const parsed = JSON.parse(raw);
-    if (parsed?.uuid && parsed?.displayName) {
-      return {
-        uuid: parsed.uuid,
-        displayName: String(parsed.displayName).trim(),
-        avatarUrl: normalizeAvatar(parsed.avatarUrl) || getDefaultAvatar(parsed.displayName),
-      };
-    }
-    return null;
+    if (!parsed?.token || !parsed?.user?.id || !parsed?.user?.displayName) return null;
+
+    return {
+      token: String(parsed.token),
+      expiresAt: parsed.expiresAt || null,
+      userId: String(parsed.user.id),
+      username: String(parsed.user.username || ""),
+      displayName: String(parsed.user.displayName).trim(),
+      avatarUrl: normalizeAvatar(parsed.user.avatarUrl) || getDefaultAvatar(parsed.user.displayName),
+      role: String(parsed.user.role || "user"),
+    };
   } catch {
     return null;
   }
 }
 
-export function saveIdentity(input, maybeAvatarUrl) {
-  const nextDisplayName =
-    typeof input === "string" ? input : String(input?.displayName || "");
-  const nextAvatarUrl =
-    typeof input === "string" ? maybeAvatarUrl : input?.avatarUrl;
-
-  const trimmedName = String(nextDisplayName || "").trim();
-  if (!trimmedName) return null;
-
-  const existing = getIdentity();
-
-  const shouldReuseUuid =
-    existing &&
-    normalizeName(existing.displayName) === normalizeName(trimmedName);
+export function saveIdentity(sessionPayload) {
+  const token = String(sessionPayload?.token || "").trim();
+  const user = sessionPayload?.user;
+  const displayName = String(user?.displayName || "").trim();
+  if (!token || !user?.id || !displayName) return null;
 
   const identity = {
-    uuid: shouldReuseUuid ? existing.uuid : uuidv4(),
-    displayName: trimmedName,
-    avatarUrl: normalizeAvatar(nextAvatarUrl) || getDefaultAvatar(trimmedName),
+    token,
+    expiresAt: sessionPayload?.expiresAt || null,
+    user: {
+      id: String(user.id),
+      username: String(user.username || ""),
+      displayName,
+      avatarUrl: normalizeAvatar(user.avatarUrl) || getDefaultAvatar(displayName),
+      role: String(user.role || "user"),
+    },
   };
 
   localStorage.setItem(STORAGE_KEY, JSON.stringify(identity));
-  return identity;
+  return getIdentity();
+}
+
+export function patchIdentityUser(nextUser = {}) {
+  const current = getIdentity();
+  if (!current) return null;
+
+  return saveIdentity({
+    token: current.token,
+    expiresAt: current.expiresAt,
+    user: {
+      id: current.userId,
+      username: current.username,
+      displayName: nextUser.displayName || current.displayName,
+      avatarUrl: nextUser.avatarUrl ?? current.avatarUrl,
+      role: nextUser.role || current.role,
+    },
+  });
+}
+
+export function getAuthToken() {
+  return getIdentity()?.token || "";
+}
+
+export function clearIdentity() {
+  localStorage.removeItem(STORAGE_KEY);
 }

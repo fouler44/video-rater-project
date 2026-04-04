@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiGet, apiPost } from "../lib/api";
-import { getDefaultAvatar, getIdentity, saveIdentity } from "../lib/identity";
+import { clearIdentity, getDefaultAvatar, getIdentity, patchIdentityUser, saveIdentity } from "../lib/identity";
 import { supabase } from "../lib/supabase";
-import { Plus, Search, RefreshCw, User, Layout, Hash, Globe, Lock } from "lucide-react";
+import { Plus, RefreshCw, User, Layout, Hash, Globe, Lock } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
 export default function LobbyPage() {
@@ -25,7 +25,28 @@ export default function LobbyPage() {
   useEffect(() => {
     loadLists();
     loadPublicRooms();
+    syncIdentityWithServer();
   }, []);
+
+  async function syncIdentityWithServer() {
+    const current = getIdentity();
+    if (!current?.token) return;
+
+    try {
+      const data = await apiGet("/api/auth/me");
+      const merged = saveIdentity({
+        token: current.token,
+        expiresAt: data.expiresAt || current.expiresAt,
+        user: data.user,
+      });
+      setIdentity(merged);
+      setDisplayName(merged?.displayName || "");
+      setAvatarUrl(merged?.avatarUrl || "");
+    } catch {
+      clearIdentity();
+      setIdentity(null);
+    }
+  }
 
   async function loadLists() {
     const { data, error } = await supabase
@@ -52,25 +73,37 @@ export default function LobbyPage() {
   }
 
   function ensureIdentity() {
-    const trimmed = displayName.trim();
-    if (!trimmed) {
-      alert("Enter a display name first");
+    const current = getIdentity();
+    if (!current?.token || !current?.userId) {
+      alert("Login or register first");
       return null;
     }
-
-    const saved = saveIdentity({
-      displayName: trimmed,
-      avatarUrl,
-    });
-    setIdentity(saved);
-    setAvatarUrl(saved.avatarUrl);
-    return saved;
+    return current;
   }
 
-  function saveProfile() {
-    const saved = ensureIdentity();
-    if (!saved) return;
-    alert("Profile saved");
+  async function saveProfile() {
+    const currentIdentity = ensureIdentity();
+    if (!currentIdentity) return;
+
+    const trimmed = displayName.trim();
+    if (!trimmed) {
+      alert("Display name is required");
+      return;
+    }
+
+    try {
+      const data = await apiPost("/api/auth/profile", {
+        displayName: trimmed,
+        avatarUrl,
+      });
+      const saved = patchIdentityUser(data.user);
+      setIdentity(saved);
+      setAvatarUrl(saved?.avatarUrl || "");
+      setDisplayName(saved?.displayName || trimmed);
+      alert("Profile saved");
+    } catch (err) {
+      alert(err.message || "Failed to save profile");
+    }
   }
 
   async function createRoom() {
@@ -82,9 +115,6 @@ export default function LobbyPage() {
       const data = await apiPost("/api/rooms", {
         name: newRoomName.trim(),
         listId: selectedList,
-        userUuid: currentIdentity.uuid,
-        displayName: currentIdentity.displayName,
-        avatarUrl: currentIdentity.avatarUrl,
         isPublic,
       });
 
@@ -115,7 +145,7 @@ export default function LobbyPage() {
         .from("lists")
         .insert({
           name: "Top 10 MAL Openings",
-          created_by: currentIdentity.uuid,
+          created_by: currentIdentity.userId,
           is_preset: true,
         })
         .select("id")
@@ -165,11 +195,17 @@ export default function LobbyPage() {
         {/* Left Column */}
         <div className="lg:col-span-4 space-y-6">
           <section className="card">
-            <div className="flex items-center gap-2 mb-4">
-              <User className="w-5 h-5 text-brand-400" />
-              <h3 className="text-lg font-bold">Your Identity</h3>
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div className="flex items-center gap-2">
+                <User className="w-5 h-5 text-brand-400" />
+                <h3 className="text-lg font-bold">Account</h3>
+              </div>
+              <button className="btn-secondary" onClick={() => navigate("/auth")}>
+                Login / Register
+              </button>
             </div>
-            <p className="muted mb-4">Set your player name before joining rooms.</p>
+            <p className="muted mb-4">Only your visible name and avatar are managed here.</p>
+
             <div className="flex items-center gap-3 mb-4">
               <img
                 src={avatarUrl.trim() || getDefaultAvatar(displayName)}
@@ -185,7 +221,7 @@ export default function LobbyPage() {
               <input
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="Enter display name..."
+                placeholder="Display name"
                 className="pl-10"
               />
               <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
@@ -199,7 +235,7 @@ export default function LobbyPage() {
             <button
               className="btn-secondary w-full mt-3"
               onClick={saveProfile}
-              disabled={!displayName.trim()}
+              disabled={!identity || !displayName.trim()}
             >
               Save profile
             </button>
@@ -214,7 +250,7 @@ export default function LobbyPage() {
               <button 
                 className="btn-primary w-full flex items-center justify-center gap-2"
                 onClick={() => setShowCreateModal(true)} 
-                disabled={!displayName.trim()}
+                disabled={!identity}
               >
                 <Plus className="w-4 h-4" />
                 Create New Room
@@ -222,6 +258,7 @@ export default function LobbyPage() {
               <button 
                 className="btn-secondary w-full flex items-center justify-center gap-2"
                 onClick={() => navigate("/create-list")}
+                disabled={!identity}
               >
                 <Layout className="w-4 h-4" />
                 Create Custom List

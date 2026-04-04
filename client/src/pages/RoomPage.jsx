@@ -1,24 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { apiPost } from "../lib/api";
+import { apiDelete, apiPost } from "../lib/api";
 import { getDefaultAvatar, getIdentity } from "../lib/identity";
 import { supabase } from "../lib/supabase";
 import { 
   Users, 
   Play, 
-  Pause, 
   SkipForward, 
   Trophy, 
   Settings, 
-  MessageSquare, 
-  Send, 
   Star, 
-  ChevronRight, 
+  CheckCircle2,
   ChevronLeft, 
-  Share2, 
   RefreshCw 
 } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
 
 const PARTYKIT_URL = import.meta.env.VITE_PARTYKIT_URL || "ws://localhost:1999";
 
@@ -35,27 +30,36 @@ export default function RoomPage() {
   const { roomId } = useParams();
   const navigate = useNavigate();
   const identity = getIdentity();
-  const chatEndRef = useRef(null);
 
   const [room, setRoom] = useState(null);
   const [openings, setOpenings] = useState([]);
   const [participants, setParticipants] = useState([]);
-  const [messages, setMessages] = useState([]);
-  const [currentMessage, setCurrentMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
   const [myRating, setMyRating] = useState(0);
   const [isOwner, setIsOwner] = useState(false);
-  const [activeTab, setActiveTab] = useState("chat");
-  const [showRatings, setShowRatings] = useState(false);
+  const [currentOpeningVotes, setCurrentOpeningVotes] = useState([]);
 
   const currentOpening = useMemo(() => {
     if (!room || !openings.length) return null;
-    return openings.find((o) => o.order_index === room.current_index);
+    return openings.find((o) => o.order_index === room.current_opening_index);
   }, [room, openings]);
 
   const participantByUuid = useMemo(
     () => Object.fromEntries(participants.map((item) => [item.user_uuid, item])),
     [participants],
+  );
+
+  const votedUserSet = useMemo(() => new Set(currentOpeningVotes.map((row) => row.user_uuid)), [currentOpeningVotes]);
+
+  const userScoreMap = useMemo(
+    () => Object.fromEntries(currentOpeningVotes.map((row) => [row.user_uuid, row.score])),
+    [currentOpeningVotes],
+  );
+
+  const allParticipantsVoted = useMemo(
+    () => participants.length > 0 && participants.every((p) => votedUserSet.has(p.user_uuid)),
+    [participants, votedUserSet],
   );
 
   useEffect(() => {
@@ -75,7 +79,11 @@ export default function RoomPage() {
 
         if (roomError) throw roomError;
         setRoom(roomData);
-        setIsOwner(roomData.created_by === identity.uuid);
+        setIsOwner(
+          roomData.owner_user_id === identity.userId ||
+          roomData.host_uuid === identity.userId ||
+          identity.role === "admin",
+        );
 
         const { data: openingsData, error: openingsError } = await supabase
           .from("list_openings")
@@ -92,8 +100,8 @@ export default function RoomPage() {
           .from("ratings")
           .select("score")
           .eq("room_id", roomId)
-          .eq("user_uuid", identity.uuid)
-          .eq("list_opening_id", openingsData.find(o => o.order_index === roomData.current_index)?.id)
+          .eq("user_uuid", identity.userId)
+          .eq("list_opening_id", openingsData.find((o) => o.order_index === roomData.current_opening_index)?.id)
           .maybeSingle();
 
         if (ratingData) setMyRating(ratingData.score);
@@ -133,30 +141,38 @@ export default function RoomPage() {
       )
       .subscribe();
 
-    const chatSub = supabase
-      .channel(`chat:${roomId}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "room_messages", filter: `room_id=eq.${roomId}` },
-        (payload) => {
-          setMessages((prev) => [...prev, payload.new]);
-        }
-      )
-      .subscribe();
-
     fetchParticipants();
-    fetchMessages();
 
     return () => {
       supabase.removeChannel(roomSub);
       supabase.removeChannel(participantSub);
-      supabase.removeChannel(chatSub);
     };
   }, [roomId]);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    async function fetchCurrentOpeningVotes() {
+      if (!currentOpening?.id) {
+        setCurrentOpeningVotes([]);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("ratings")
+        .select("user_uuid,score")
+        .eq("room_id", roomId)
+        .eq("list_opening_id", currentOpening.id);
+
+      if (!error) {
+        setCurrentOpeningVotes(data || []);
+      }
+    }
+
+    fetchCurrentOpeningVotes();
+  }, [roomId, currentOpening?.id]);
+
+  useEffect(() => {
+    setMyRating(0);
+  }, [currentOpening?.id]);
 
   async function fetchParticipants() {
     const membersResult = await supabase
@@ -182,12 +198,17 @@ export default function RoomPage() {
     setParticipants([]);
   }
 
+  function hasVoted(userUuid) {
+    return votedUserSet.has(userUuid);
+  }
+
   async function upsertMyPresence() {
     if (!identity) return;
 
     const payload = {
       room_id: roomId,
-      user_uuid: identity.uuid,
+      user_uuid: identity.userId,
+      user_id: identity.userId,
       display_name: identity.displayName,
       avatar_url: identity.avatarUrl || getDefaultAvatar(identity.displayName),
     };
@@ -197,31 +218,9 @@ export default function RoomPage() {
 
     await supabase.from("room_participants").upsert({
       room_id: roomId,
-      user_uuid: identity.uuid,
+      user_uuid: identity.userId,
       user_name: identity.displayName,
       avatar_url: identity.avatarUrl || getDefaultAvatar(identity.displayName),
-    });
-  }
-
-  async function fetchMessages() {
-    const { data } = await supabase
-      .from("room_messages")
-      .select("*")
-      .eq("room_id", roomId)
-      .order("created_at", { ascending: true });
-    setMessages(data || []);
-  }
-
-  async function handleSendMessage() {
-    if (!currentMessage.trim() || !identity) return;
-    const msg = currentMessage.trim();
-    setCurrentMessage("");
-
-    await supabase.from("room_messages").insert({
-      room_id: roomId,
-      user_uuid: identity.uuid,
-      user_name: identity.displayName,
-      content: msg,
     });
   }
 
@@ -230,7 +229,6 @@ export default function RoomPage() {
     setMyRating(score);
     await apiPost("/api/rooms/rate", {
       roomId,
-      userUuid: identity.uuid,
       openingId: currentOpening.id,
       score,
     });
@@ -238,17 +236,62 @@ export default function RoomPage() {
 
   async function handleStartRoom() {
     if (!isOwner) return;
-    await apiPost("/api/rooms/status", { roomId, status: "playing" });
+    setActionLoading(true);
+    try {
+      const data = await apiPost("/api/rooms/status", { roomId, status: "playing" });
+      setRoom(data.room);
+    } catch (err) {
+      alert("Error starting session: " + (err.message || "Unknown error"));
+    } finally {
+      setActionLoading(false);
+    }
   }
 
   async function handleNext() {
     if (!isOwner || !room) return;
-    if (room.current_index >= openings.length - 1) {
+    if (room.current_opening_index >= openings.length - 1) {
       await apiPost("/api/rooms/status", { roomId, status: "finished" });
       navigate(`/rankings/${roomId}`);
     } else {
-      await apiPost("/api/rooms/next", { roomId });
+      await apiPost(`/api/rooms/${roomId}/advance`, {
+        nextIndex: room.current_opening_index + 1,
+      });
     }
+  }
+
+  async function handleSelectOpening(index) {
+    if (!isOwner || !room) return;
+
+    const safeIndex = Math.max(0, Math.min(openings.length - 1, Number(index)));
+    setActionLoading(true);
+    try {
+      const data = await apiPost(`/api/rooms/${roomId}/opening`, {
+        openingIndex: safeIndex,
+      });
+      setRoom(data.room);
+    } catch (err) {
+      alert("Error jumping to opening: " + (err.message || "Unknown error"));
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleDeleteRoom() {
+    if (!isOwner) return;
+    const confirmed = window.confirm("Delete this room? This action cannot be undone.");
+    if (!confirmed) return;
+
+    try {
+      await apiDelete(`/api/rooms/${roomId}`);
+      navigate("/");
+    } catch (error) {
+      alert(error.message || "Could not delete room");
+    }
+  }
+
+  function goPrev() {
+    if (!isOwner || !room || room.current_opening_index <= 0) return;
+    handleSelectOpening(room.current_opening_index - 1);
   }
 
   if (loading) return <div className="flex items-center justify-center min-h-screen"><RefreshCw className="animate-spin text-brand-500" /></div>;
@@ -274,11 +317,12 @@ export default function RoomPage() {
             <Users className="w-3 h-3" />
             {participants.length} Active
           </div>
-          <button className="p-2 hover:bg-slate-800 rounded-lg transition-colors">
-            <Share2 className="w-5 h-5" />
-          </button>
           {isOwner && (
-            <button className="p-2 hover:bg-slate-800 rounded-lg transition-colors">
+            <button
+              className="p-2 hover:bg-slate-800 rounded-lg transition-colors"
+              title="Delete room"
+              onClick={handleDeleteRoom}
+            >
               <Settings className="w-5 h-5" />
             </button>
           )}
@@ -288,6 +332,17 @@ export default function RoomPage() {
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-8 min-h-0">
         {/* Main Content: Video & Controls */}
         <div className="lg:col-span-8 flex flex-col gap-6 min-h-0">
+          {room?.status === "playing" && currentOpening && (
+            <div className="flex items-center justify-between px-4 py-2 bg-slate-900/40 border border-slate-800 rounded-2xl">
+              <div>
+                <h3 className="text-sm font-bold">{currentOpening.anime_title}</h3>
+                <p className="text-[10px] text-slate-400 uppercase tracking-widest">{currentOpening.opening_label}</p>
+              </div>
+              <div className="bg-brand-500 px-3 py-1 rounded-full text-[10px] font-black shadow-lg">
+                {room?.current_opening_index + 1} / {openings.length}
+              </div>
+            </div>
+          )}
           <div className="relative aspect-video bg-black rounded-3xl overflow-hidden shadow-2xl border border-slate-800 group">
             {room?.status === "waiting" ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
@@ -299,8 +354,12 @@ export default function RoomPage() {
                   The room owner will start the session once everyone has joined.
                 </p>
                 {isOwner && (
-                  <button className="btn-primary px-12 py-4 text-lg" onClick={handleStartRoom}>
-                    START SESSION
+                  <button 
+                    className="btn-primary px-12 py-4 text-lg disabled:opacity-50 disabled:cursor-not-allowed" 
+                    onClick={handleStartRoom}
+                    disabled={actionLoading}
+                  >
+                    {actionLoading ? "Starting..." : "START SESSION"}
                   </button>
                 )}
               </div>
@@ -313,24 +372,31 @@ export default function RoomPage() {
                   VIEW RANKINGS
                 </Link>
               </div>
+            ) : !currentOpening?.youtube_video_id ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
+                <Play className="w-16 h-16 text-slate-600 mb-4" />
+                <h2 className="text-2xl font-black mb-2">Video unavailable</h2>
+                <p className="text-slate-400 max-w-md mb-6">
+                  This opening does not have an embeddable YouTube video yet.
+                </p>
+                <a
+                  className="btn-primary px-6 py-3"
+                  href={`https://www.youtube.com/watch?v=${currentOpening?.youtube_video_id || ""}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open on YouTube
+                </a>
+              </div>
             ) : (
               <>
                 <iframe
                   className="w-full h-full"
-                  src={`https://www.youtube.com/embed/${currentOpening?.youtube_video_id}?autoplay=1&controls=1&modestbranding=1&rel=0`}
+                  src={`https://www.youtube.com/embed/${currentOpening.youtube_video_id}?autoplay=1&controls=1&modestbranding=1&rel=0`}
                   title="YouTube video player"
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                   allowFullScreen
                 ></iframe>
-                <div className="absolute top-6 left-6 right-6 flex items-start justify-between pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
-                  <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10">
-                    <h3 className="text-sm font-bold">{currentOpening?.anime_title}</h3>
-                    <p className="text-[10px] text-slate-400 uppercase tracking-widest">{currentOpening?.opening_label}</p>
-                  </div>
-                  <div className="bg-brand-500 px-3 py-1 rounded-full text-[10px] font-black shadow-lg">
-                    {room?.current_index + 1} / {openings.length}
-                  </div>
-                </div>
               </>
             )}
           </div>
@@ -357,131 +423,125 @@ export default function RoomPage() {
               </div>
               
               {isOwner && (
-                <button 
-                  className="btn-primary h-12 px-8 flex items-center gap-2 whitespace-nowrap"
-                  onClick={handleNext}
-                >
-                  <SkipForward className="w-4 h-4" />
-                  {room.current_index >= openings.length - 1 ? "Finish Session" : "Next Opening"}
-                </button>
+                <div className="flex items-center gap-2 whitespace-nowrap">
+                  <button
+                    className="btn-secondary h-12 px-4 flex items-center gap-2"
+                    onClick={goPrev}
+                    disabled={room.current_opening_index <= 0}
+                  >
+                    Prev
+                  </button>
+                  <button 
+                    className="btn-primary h-12 px-8 flex items-center gap-2"
+                    onClick={handleNext}
+                  >
+                    <SkipForward className="w-4 h-4" />
+                    {room.current_opening_index >= openings.length - 1 ? "Finish Session" : "Next Opening"}
+                  </button>
+                </div>
               )}
             </div>
           )}
         </div>
 
-        {/* Sidebar: Chat & Info */}
+        {/* Sidebar: People & Info */}
         <div className="lg:col-span-4 flex flex-col gap-6 min-h-0">
           <div className="card flex-1 flex flex-col min-h-0 p-0 overflow-hidden">
-            <div className="flex border-b border-slate-800">
-              <button 
-                className={`flex-1 py-4 text-xs font-bold uppercase tracking-widest transition-colors ${activeTab === 'chat' ? 'text-brand-400 border-b-2 border-brand-500' : 'text-slate-500 hover:text-slate-300'}`}
-                onClick={() => setActiveTab('chat')}
-              >
-                Chat
-              </button>
-              <button 
-                className={`flex-1 py-4 text-xs font-bold uppercase tracking-widest transition-colors ${activeTab === 'participants' ? 'text-brand-400 border-b-2 border-brand-500' : 'text-slate-500 hover:text-slate-300'}`}
-                onClick={() => setActiveTab('participants')}
-              >
-                People ({participants.length})
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-6 scrollbar-thin">
-              {activeTab === 'chat' ? (
-                <div className="space-y-4">
-                  {messages.map((msg, idx) => (
-                    <div key={msg.id || idx} className={`flex flex-col ${msg.user_uuid === identity?.uuid ? 'items-end' : 'items-start'}`}>
-                      <div className="flex items-center gap-2 mb-1">
-                        <img
-                          src={
-                            participantByUuid[msg.user_uuid]?.avatar_url ||
-                            (msg.user_uuid === identity?.uuid ? identity?.avatarUrl : "") ||
-                            getDefaultAvatar(msg.user_name)
-                          }
-                          alt={msg.user_name}
-                          className="w-5 h-5 rounded-full object-cover border border-slate-700"
-                          referrerPolicy="no-referrer"
-                        />
-                        <span className="text-[10px] font-bold text-slate-500">{msg.user_name}</span>
-                        <span className="text-[8px] text-slate-700">{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                      </div>
-                      <div className={`px-4 py-2 rounded-2xl text-sm max-w-[85%] ${
-                        msg.user_uuid === identity?.uuid 
-                          ? 'bg-brand-600 text-white rounded-tr-none' 
-                          : 'bg-slate-800 text-slate-200 rounded-tl-none'
-                      }`}>
-                        {msg.content}
+            <div className="flex-1 overflow-y-auto p-6 scrollbar-thin space-y-6">
+              <div className="space-y-3">
+                {participants.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <img
+                        src={p.avatar_url || getDefaultAvatar(p.user_name)}
+                        alt={p.user_name}
+                        className="w-8 h-8 rounded-full object-cover border border-slate-700 shrink-0"
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="min-w-0">
+                        <span className="text-sm font-medium block truncate">{p.user_name}</span>
+                        <div className="flex items-center gap-2 mt-1">
+                          {(p.user_uuid === room?.owner_user_id || p.user_uuid === room?.host_uuid) && (
+                            <span className="pill text-[8px] bg-amber-500/10 text-amber-500 border-amber-500/20">HOST</span>
+                          )}
+                          {hasVoted(p.user_uuid) ? (
+                            allParticipantsVoted ? (
+                              <span className="inline-flex items-center gap-1 text-xs font-bold text-brand-400">
+                                {userScoreMap[p.user_uuid] || "—"}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-widest text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 rounded-full px-2 py-1">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Voted
+                              </span>
+                            )
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-widest text-slate-400 bg-slate-700 rounded-full px-2 py-1 animate-pulse">
+                              ⏳ Waiting
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  ))}
-                  <div ref={chatEndRef} />
+                  </div>
+                ))}
+              </div>
+              <div className="border-t border-slate-800 pt-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Queue</h3>
+                  </div>
+                  <span className="pill text-[8px]">{openings.length} items</span>
                 </div>
-              ) : (
-                <div className="space-y-3">
-                  {participants.map((p) => (
-                    <div key={p.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800">
-                      <div className="flex items-center gap-3">
-                        <img
-                          src={p.avatar_url || getDefaultAvatar(p.user_name)}
-                          alt={p.user_name}
-                          className="w-8 h-8 rounded-full object-cover border border-slate-700"
-                          referrerPolicy="no-referrer"
-                        />
-                        <span className="text-sm font-medium">{p.user_name}</span>
-                      </div>
-                      {p.user_uuid === room?.created_by && (
-                        <span className="pill text-[8px] bg-amber-500/10 text-amber-500 border-amber-500/20">HOST</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1 scrollbar-thin">
+                  {openings.map((opening) => {
+                    const isCurrent = opening.order_index === room?.current_opening_index;
+                    const isPlayable = Boolean(opening.youtube_video_id);
 
-            {activeTab === 'chat' && (
-              <div className="p-4 bg-slate-900/50 border-t border-slate-800">
-                <div className="relative">
-                  <input
-                    value={currentMessage}
-                    onChange={(e) => setCurrentMessage(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                    placeholder="Type a message..."
-                    className="w-full pr-12 h-12"
-                  />
-                  <button 
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-brand-400 hover:text-brand-300 transition-colors"
-                    onClick={handleSendMessage}
-                  >
-                    <Send className="w-5 h-5" />
-                  </button>
+                    return (
+                      <button
+                        key={opening.id}
+                        type="button"
+                        onClick={() => isOwner && handleSelectOpening(opening.order_index)}
+                        disabled={!isOwner || actionLoading}
+                        className={`w-full text-left rounded-xl border p-3 transition-all ${
+                          isCurrent
+                            ? "bg-brand-500/10 border-brand-500/40"
+                            : "bg-slate-900/40 border-slate-800 hover:border-slate-700"
+                        } ${isOwner && !actionLoading ? "hover:-translate-y-0.5" : ""} ${actionLoading ? "opacity-50 cursor-not-allowed" : ""}`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center text-xs font-black shrink-0">
+                            {opening.order_index + 1}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-bold truncate flex items-center gap-2">
+                              {opening.anime_title}
+                              {isCurrent && <CheckCircle2 className="w-4 h-4 text-brand-400 shrink-0" />}
+                            </p>
+                            <p className="text-[10px] text-slate-500 truncate">{opening.opening_label}</p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {opening.youtube_video_id ? (
+                              <span className="text-[8px] uppercase tracking-widest text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 rounded-full px-2 py-1">
+                                Video
+                              </span>
+                            ) : (
+                              <span className="text-[8px] uppercase tracking-widest text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded-full px-2 py-1">
+                                No video
+                              </span>
+                            )}
+
+                          </div>
+                        </div>
+                        {!isPlayable && (
+                          <p className="text-[10px] text-slate-600 mt-2">This item has no embedded YouTube id yet.</p>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
-            )}
-          </div>
-
-          <div className="card p-6 bg-brand-500/5 border-brand-500/10">
-            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Up Next</h3>
-            <div className="space-y-3">
-              {openings.slice(room?.current_index + 1, room?.current_index + 4).map((op, idx) => (
-                <div key={op.id} className="flex items-center gap-3 opacity-60">
-                  <div className="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center text-xs font-bold">
-                    {room.current_index + idx + 2}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-bold truncate">{op.anime_title}</p>
-                    <p className="text-[10px] text-slate-600">{op.opening_label}</p>
-                  </div>
-                </div>
-              ))}
-              {openings.length - room?.current_index - 1 > 3 && (
-                <p className="text-[10px] text-slate-700 text-center pt-2">
-                  + {openings.length - room?.current_index - 4} more openings
-                </p>
-              )}
-              {room?.current_index >= openings.length - 1 && (
-                <p className="text-xs text-slate-500 italic text-center">No more openings</p>
-              )}
             </div>
           </div>
         </div>

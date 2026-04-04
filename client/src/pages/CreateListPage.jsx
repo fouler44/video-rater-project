@@ -82,7 +82,7 @@ export default function CreateListPage() {
     const { data, error } = await supabase
       .from("lists")
       .select("id,name")
-      .eq("created_by", identity.uuid)
+      .eq("created_by", identity.userId)
       .eq("is_preset", false)
       .order("created_at", { ascending: false });
 
@@ -103,7 +103,7 @@ export default function CreateListPage() {
         .from("lists")
         .insert({
           name: finalName,
-          created_by: identity.uuid,
+          created_by: identity.userId,
           is_preset: false,
         })
         .select("id,name")
@@ -240,7 +240,7 @@ export default function CreateListPage() {
         .from("lists")
         .delete()
         .eq("id", listId)
-        .eq("created_by", identity.uuid)
+        .eq("created_by", identity.userId)
         .eq("is_preset", false);
 
       if (error) throw error;
@@ -269,7 +269,7 @@ export default function CreateListPage() {
           .from("lists")
           .insert({
             name: listName.trim(),
-            created_by: identity.uuid,
+            created_by: identity.userId,
             is_preset: false,
           })
           .select("id")
@@ -282,7 +282,7 @@ export default function CreateListPage() {
           .from("lists")
           .update({ name: listName.trim() })
           .eq("id", editingListId)
-          .eq("created_by", identity.uuid);
+          .eq("created_by", identity.userId);
 
         if (renameError) throw renameError;
 

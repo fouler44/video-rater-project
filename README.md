@@ -31,6 +31,8 @@ Fun full-stack app to watch and rate anime openings in synced rooms.
 - PartyKit WS: ws://localhost:1999
 
 ## Notes
-- No email/password auth. Identity is UUID + display name in localStorage.
+- Auth now uses app users + backend sessions (username/password + bearer token).
+- Rooms now track a real `owner_user_id`; only owner or admin can control/delete a room.
+- Seeded admin account after running latest migration: `admin / admin1234` (change immediately in DB).
 - Jikan responses are cached server-side in memory.
 - YouTube IDs are persisted when list entries are created.
