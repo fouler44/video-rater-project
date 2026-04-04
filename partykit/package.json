@@ -1,0 +1,12 @@
+{
+  "name": "anime-opening-rater-partykit",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "partykit dev",
+    "build": "echo \"No build step for PartyKit\""
+  },
+  "dependencies": {
+    "partykit": "^0.0.112"
+  }
+}

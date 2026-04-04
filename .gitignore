@@ -1,0 +1,8 @@
+node_modules
+.env
+.env.*
+!.env.example
+client/dist
+server/dist
+.partykit
+.DS_Store

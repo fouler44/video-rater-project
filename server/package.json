@@ -1,0 +1,19 @@
+{
+  "name": "anime-opening-rater-server",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "build": "echo \"No build step for server\""
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "morgan": "^1.10.0",
+    "nanoid": "^5.1.5",
+    "@supabase/supabase-js": "^2.49.4"
+  }
+}
