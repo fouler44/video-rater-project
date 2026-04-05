@@ -434,6 +434,7 @@ export default function RoomPage() {
 
         ws.onopen = () => {
           if (closedByEffect) return;
+          if (wsRef.current !== ws) return;
 
           reconnectAttemptRef.current = 0;
           if (reconnectTimerRef.current) {
@@ -449,6 +450,7 @@ export default function RoomPage() {
 
         ws.onmessage = (event) => {
           if (closedByEffect) return;
+          if (wsRef.current !== ws) return;
 
           let envelope;
           try {
@@ -461,8 +463,13 @@ export default function RoomPage() {
         };
 
         ws.onclose = (event) => {
-          if (wsRef.current === ws) {
+          const isActiveSocket = wsRef.current === ws;
+          if (isActiveSocket) {
             wsRef.current = null;
+          }
+
+          if (!isActiveSocket) {
+            return;
           }
 
           stopHeartbeat();
@@ -486,6 +493,7 @@ export default function RoomPage() {
         };
 
         ws.onerror = () => {
+          if (wsRef.current !== ws) return;
           setPartyError("Realtime sync degraded. Reconnecting...");
         };
       } catch {
