@@ -37,6 +37,7 @@ for (const name of REQUIRED_ENV_VARS) {
 
 const port = Number(process.env.PORT || 4000);
 const clientOrigin = String(process.env.CLIENT_ORIGIN || "").trim();
+const debugOrigins = ["http://localhost:5173", "http://localhost:5174"];
 const makeInviteCode = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 6);
 const makeSessionToken = () => randomBytes(48).toString("hex");
 const BULK_INSERT_CHUNK_SIZE = 500;
@@ -411,7 +412,7 @@ async function upsertRoomMembership(roomId, user) {
   }
 }
 
-app.use(cors({ origin: clientOrigin, credentials: true }));
+app.use(cors({ origin: [clientOrigin, ...debugOrigins], credentials: true }));
 app.use((req, res, next) => {
   req.requestId = randomUUID();
   res.setHeader("x-request-id", req.requestId);
