@@ -665,7 +665,7 @@ export default function RoomPage() {
 
   useEffect(() => {
     const player = playerRef.current;
-    if (!isPlayerApiReady(player) || !playerReadyRef.current) return;
+    if (!isPlayerApiReady(player)) return;
 
     if (room?.status !== "playing") {
       player.pauseVideo?.();
