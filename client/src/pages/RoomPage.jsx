@@ -22,6 +22,7 @@ const PARTYKIT_URL = APP_ENV.partykitUrl;
 const OPENING_GRACE_MS = 2500;
 const DRIFT_THRESHOLD_SECONDS = 3;
 const HOST_SYNC_INTERVAL_MS = 12000;
+const PARTY_HEARTBEAT_MS = 20000;
 
 let youtubeIframePromise = null;
 
@@ -140,6 +141,7 @@ export default function RoomPage() {
 
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
+  const heartbeatTimerRef = useRef(null);
   const pendingSkipRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
 
@@ -383,6 +385,29 @@ export default function RoomPage() {
 
     let closedByEffect = false;
 
+    function stopHeartbeat() {
+      if (heartbeatTimerRef.current) {
+        window.clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = null;
+      }
+    }
+
+    function startHeartbeat(socket) {
+      stopHeartbeat();
+      heartbeatTimerRef.current = window.setInterval(() => {
+        if (closedByEffect) {
+          stopHeartbeat();
+          return;
+        }
+
+        if (socket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+
+        socket.send(JSON.stringify({ type: "client:ping", payload: { ts: Date.now() } }));
+      }, PARTY_HEARTBEAT_MS);
+    }
+
     function connect() {
       if (closedByEffect) return;
 
@@ -418,6 +443,7 @@ export default function RoomPage() {
 
           setPartyConnected(true);
           setPartyError("");
+          startHeartbeat(ws);
           sendPartyEvent("room:request-state", {});
         };
 
@@ -434,12 +460,19 @@ export default function RoomPage() {
           handlePartyEvent(envelope);
         };
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
           if (wsRef.current === ws) {
             wsRef.current = null;
           }
 
+          stopHeartbeat();
+
           setPartyConnected(false);
+
+          if (event?.code === 4401) {
+            setPartyError("Session expired. Please log in again.");
+            return;
+          }
 
           if (!closedByEffect) {
             if (!reconnectTimerRef.current) {
@@ -472,6 +505,7 @@ export default function RoomPage() {
 
     return () => {
       closedByEffect = true;
+      stopHeartbeat();
       if (reconnectTimerRef.current) {
         window.clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
