@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, User } from "lucide-react";
+import { ArrowLeft, User, AlertTriangle, CheckCircle2, X } from "lucide-react";
 import { apiPost } from "../lib/api";
 import { clearIdentity, getDefaultAvatar, getIdentity, saveIdentity } from "../lib/identity";
 
@@ -13,6 +13,7 @@ export default function AuthPage() {
   const [password, setPassword] = useState("");
   const [authMode, setAuthMode] = useState("login");
   const [authLoading, setAuthLoading] = useState(false);
+  const [uiNotice, setUiNotice] = useState(null);
 
   useEffect(() => {
     const current = getIdentity();
@@ -22,18 +23,30 @@ export default function AuthPage() {
     setUsername(current?.username || "");
   }, []);
 
+  useEffect(() => {
+    if (!uiNotice) return;
+
+    const timeout = window.setTimeout(() => {
+      setUiNotice(null);
+    }, 3600);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [uiNotice]);
+
   async function submitAuth() {
     const safeUsername = username.trim().toLowerCase();
     const safePassword = password.trim();
     const safeDisplayName = displayName.trim();
 
     if (!safeUsername || !safePassword) {
-      alert("Username and password are required");
+      showNotice("Username and password are required", "warning");
       return;
     }
 
     if (authMode === "register" && !safeDisplayName) {
-      alert("Display name is required for register");
+      showNotice("Display name is required for register", "warning");
       return;
     }
 
@@ -59,13 +72,17 @@ export default function AuthPage() {
       setAvatarUrl(saved?.avatarUrl || avatarUrl);
       setUsername(saved?.username || safeUsername);
       setPassword("");
-      alert(authMode === "register" ? "Account created" : "Logged in");
+      showNotice(authMode === "register" ? "Account created" : "Logged in", "success");
       navigate("/");
     } catch (err) {
-      alert(err.message || "Authentication failed");
+      showNotice(err.message || "Authentication failed", "error");
     } finally {
       setAuthLoading(false);
     }
+  }
+
+  function showNotice(message, tone = "error") {
+    setUiNotice({ message: String(message || "Unexpected error"), tone });
   }
 
   function logout() {
@@ -78,6 +95,34 @@ export default function AuthPage() {
   return (
     <div className="max-w-xl mx-auto px-4 py-12">
       <section className="card">
+        {uiNotice ? (
+          <div
+            className={`mb-4 text-sm px-4 py-3 rounded-xl border flex items-start gap-3 animate-fade-in ${
+              uiNotice.tone === "success"
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+                : uiNotice.tone === "warning"
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
+                  : "border-rose-500/40 bg-rose-500/10 text-rose-100"
+            }`}
+            role="alert"
+          >
+            {uiNotice.tone === "success" ? (
+              <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            )}
+            <span className="flex-1">{uiNotice.message}</span>
+            <button
+              type="button"
+              className="p-1 rounded-md hover:bg-black/20 transition-colors"
+              onClick={() => setUiNotice(null)}
+              aria-label="Close notice"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        ) : null}
+
         <div className="flex items-center justify-between gap-3 mb-4">
           <h2 className="text-xl font-bold">Login / Register</h2>
           <button className="btn-ghost flex items-center gap-2" onClick={() => navigate("/")}>

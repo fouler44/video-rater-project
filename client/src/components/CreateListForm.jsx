@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { apiGet } from "../lib/api";
-import { supabase } from "../lib/supabase";
+import { AlertTriangle, CheckCircle2, X } from "lucide-react";
+import { apiGet, apiPost } from "../lib/api";
 
 function sanitizeOpeningLabel(value) {
   if (!value) return "OP1";
@@ -18,6 +18,7 @@ export default function CreateListForm({ identity, onListCreated, availableLists
   const [youtubeResults, setYoutubeResults] = useState({});
   const [youtubeLoadingByIndex, setYoutubeLoadingByIndex] = useState({});
   const [editingListId, setEditingListId] = useState("");
+  const [uiNotice, setUiNotice] = useState(null);
 
   const canCreateCustom = useMemo(() => listName.trim() && customOpenings.length > 0, [listName, customOpenings]);
   const editableLists = useMemo(
@@ -45,38 +46,41 @@ export default function CreateListForm({ identity, onListCreated, availableLists
     return () => clearTimeout(timeout);
   }, [animeSearch, mode]);
 
+  useEffect(() => {
+    if (!uiNotice) return;
+
+    const timeout = window.setTimeout(() => {
+      setUiNotice(null);
+    }, 3800);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [uiNotice]);
+
   async function createPresetList() {
     setLoading(true);
     try {
       const generated = await apiGet("/api/lists/preset/top-mal-openings?limit=25");
       const finalName = listName.trim() || "Top MAL Openings";
-      const { data: list, error: listError } = await supabase
-        .from("lists")
-        .insert({
-          name: finalName,
-          created_by: identity.userId,
-          is_preset: true,
-        })
-        .select("id,name")
-        .single();
-
-      if (listError) throw listError;
-
-      const entries = (generated.openings || []).map((opening, index) => ({
-        ...opening,
-        list_id: list.id,
-        order_index: index,
+      const entries = (generated.openings || []).map((opening) => ({
+        anime_id: opening.anime_id,
+        anime_title: opening.anime_title,
+        opening_label: opening.opening_label,
+        youtube_video_id: opening.youtube_video_id,
+        thumbnail_url: opening.thumbnail_url,
       }));
 
-      if (entries.length > 0) {
-        const { error: openingError } = await supabase.from("list_openings").insert(entries);
-        if (openingError) throw openingError;
-      }
+      const saved = await apiPost("/api/lists/save", {
+        name: finalName,
+        isPreset: true,
+        openings: entries,
+      });
 
       setListName("");
-      onListCreated?.(list);
+      onListCreated?.(saved.list);
     } catch (error) {
-      alert(error.message || "Failed to create preset list");
+      showNotice(error.message || "Failed to create preset list", "error");
     } finally {
       setLoading(false);
     }
@@ -129,27 +133,24 @@ export default function CreateListForm({ identity, onListCreated, availableLists
   async function createCustomList() {
     setLoading(true);
     try {
-      const { data: list, error: listError } = await supabase
-        .from("lists")
-        .insert({
-          name: listName.trim(),
-          created_by: identity.userId,
-          is_preset: false,
-        })
-        .select("id,name")
-        .single();
+      const payload = buildOpeningsPayload("").map((item) => ({
+        anime_id: item.anime_id,
+        anime_title: item.anime_title,
+        opening_label: item.opening_label,
+        youtube_video_id: item.youtube_video_id,
+        thumbnail_url: item.thumbnail_url,
+      }));
 
-      if (listError) throw listError;
-
-      const payload = buildOpeningsPayload(list.id);
-
-      const { error: openingError } = await supabase.from("list_openings").insert(payload);
-      if (openingError) throw openingError;
+      const saved = await apiPost("/api/lists/save", {
+        name: listName.trim(),
+        isPreset: false,
+        openings: payload,
+      });
 
       resetCustomEditor();
-      onListCreated?.(list);
+      onListCreated?.(saved.list);
     } catch (error) {
-      alert(error.message || "Failed to create custom list");
+      showNotice(error.message || "Failed to create custom list", "error");
     } finally {
       setLoading(false);
     }
@@ -160,32 +161,25 @@ export default function CreateListForm({ identity, onListCreated, availableLists
 
     setLoading(true);
     try {
-      const { error: listError } = await supabase
-        .from("lists")
-        .update({ name: listName.trim() })
-        .eq("id", editingListId)
-        .eq("created_by", identity.userId)
-        .eq("is_preset", false);
+      const payload = buildOpeningsPayload(editingListId).map((item) => ({
+        anime_id: item.anime_id,
+        anime_title: item.anime_title,
+        opening_label: item.opening_label,
+        youtube_video_id: item.youtube_video_id,
+        thumbnail_url: item.thumbnail_url,
+      }));
 
-      if (listError) throw listError;
-
-      const { error: deleteError } = await supabase
-        .from("list_openings")
-        .delete()
-        .eq("list_id", editingListId);
-
-      if (deleteError) throw deleteError;
-
-      const payload = buildOpeningsPayload(editingListId);
-      if (payload.length > 0) {
-        const { error: insertError } = await supabase.from("list_openings").insert(payload);
-        if (insertError) throw insertError;
-      }
+      await apiPost("/api/lists/save", {
+        listId: editingListId,
+        name: listName.trim(),
+        isPreset: false,
+        openings: payload,
+      });
 
       onListCreated?.();
-      alert("List updated successfully");
+      showNotice("List updated successfully", "success");
     } catch (error) {
-      alert(error.message || "Failed to update list");
+      showNotice(error.message || "Failed to update list", "error");
     } finally {
       setLoading(false);
     }
@@ -202,18 +196,12 @@ export default function CreateListForm({ identity, onListCreated, availableLists
 
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("list_openings")
-        .select("id,anime_id,anime_title,opening_label,youtube_video_id,thumbnail_url,order_index")
-        .eq("list_id", listId)
-        .order("order_index", { ascending: true });
-
-      if (error) throw error;
+      const data = await apiGet(`/api/lists/${listId}/openings`);
 
       setEditingListId(listId);
       setListName(selected.name || "");
       setCustomOpenings(
-        (data || []).map((item) => ({
+        (data.openings || []).map((item) => ({
           ...item,
           opening_options: [item.opening_label || "OP1"],
           selected_video_title: "",
@@ -223,10 +211,14 @@ export default function CreateListForm({ identity, onListCreated, availableLists
       setYoutubeResults({});
       setYoutubeLoadingByIndex({});
     } catch (error) {
-      alert(error.message || "Failed to load list");
+      showNotice(error.message || "Failed to load list", "error");
     } finally {
       setLoading(false);
     }
+  }
+
+  function showNotice(message, tone = "error") {
+    setUiNotice({ message: String(message || "Unexpected error"), tone });
   }
 
   async function addAnime(anime) {
@@ -261,6 +253,32 @@ export default function CreateListForm({ identity, onListCreated, availableLists
 
   return (
     <div className="card stack">
+      {uiNotice ? (
+        <div
+          className={`text-sm px-4 py-3 rounded-xl border flex items-start gap-3 animate-fade-in ${
+            uiNotice.tone === "success"
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+              : "border-rose-500/40 bg-rose-500/10 text-rose-100"
+          }`}
+          role="alert"
+        >
+          {uiNotice.tone === "success" ? (
+            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          )}
+          <span className="flex-1">{uiNotice.message}</span>
+          <button
+            type="button"
+            className="p-1 rounded-md hover:bg-black/20 transition-colors"
+            onClick={() => setUiNotice(null)}
+            aria-label="Close notice"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      ) : null}
+
       <div className="hero-copy">
         <span className="eyebrow">List builder</span>
         <h3>{editingListId ? "Edit custom list" : "Create list"}</h3>

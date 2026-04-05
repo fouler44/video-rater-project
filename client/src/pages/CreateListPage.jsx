@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiGet } from "../lib/api";
+import { apiDelete, apiGet, apiPost } from "../lib/api";
 import { getIdentity } from "../lib/identity";
-import { supabase } from "../lib/supabase";
 import { 
   ArrowLeft, 
   Plus, 
@@ -15,7 +14,9 @@ import {
   Music, 
   Play, 
   CheckCircle2,
-  Loader2
+  Loader2,
+  AlertTriangle,
+  X
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -49,6 +50,15 @@ export default function CreateListPage() {
   const [quickListName, setQuickListName] = useState("");
   const [quickCount, setQuickCount] = useState(25);
   const [isGeneratingQuickList, setIsGeneratingQuickList] = useState(false);
+  const [uiNotice, setUiNotice] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState({
+    open: false,
+    title: "",
+    message: "",
+    confirmLabel: "Confirm",
+    danger: false,
+    payloadId: "",
+  });
 
   const canSave = useMemo(
     () => listName.trim().length > 0 && listItems.length > 0,
@@ -63,6 +73,18 @@ export default function CreateListPage() {
 
     loadMyLists();
   }, []);
+
+  useEffect(() => {
+    if (!uiNotice) return;
+
+    const timeout = window.setTimeout(() => {
+      setUiNotice(null);
+    }, 4200);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [uiNotice]);
 
   function resetEditor() {
     setEditingListId("");
@@ -79,14 +101,13 @@ export default function CreateListPage() {
   async function loadMyLists() {
     if (!identity) return;
 
-    const { data, error } = await supabase
-      .from("lists")
-      .select("id,name")
-      .eq("created_by", identity.userId)
-      .eq("is_preset", false)
-      .order("created_at", { ascending: false });
-
-    if (!error) setMyCustomLists(data || []);
+    try {
+      const data = await apiGet("/api/lists");
+      const mine = (data.lists || []).filter((list) => !list.is_preset && list.created_by === identity.userId);
+      setMyCustomLists(mine);
+    } catch {
+      setMyCustomLists([]);
+    }
   }
 
   async function generatePopularListQuickly() {
@@ -99,35 +120,26 @@ export default function CreateListPage() {
       const generated = await apiGet(`/api/lists/preset/top-mal-openings?source=popular&limit=${count}`);
       const finalName = quickListName.trim() || `Popular Top ${count} Openings`;
 
-      const { data: list, error: listError } = await supabase
-        .from("lists")
-        .insert({
-          name: finalName,
-          created_by: identity.userId,
-          is_preset: false,
-        })
-        .select("id,name")
-        .single();
-
-      if (listError) throw listError;
-
-      const entries = (generated.openings || []).map((opening, index) => ({
-        ...opening,
-        list_id: list.id,
-        order_index: index,
+      const payload = (generated.openings || []).map((opening) => ({
+        anime_id: opening.anime_id,
+        anime_title: opening.anime_title,
+        opening_label: opening.opening_label,
+        youtube_video_id: opening.youtube_video_id,
+        thumbnail_url: opening.thumbnail_url,
       }));
 
-      if (entries.length > 0) {
-        const { error: openingError } = await supabase.from("list_openings").insert(entries);
-        if (openingError) throw openingError;
-      }
+      const saved = await apiPost("/api/lists/save", {
+        name: finalName,
+        isPreset: false,
+        openings: payload,
+      });
 
       setQuickListName("");
       await loadMyLists();
-      await startEditList(list.id);
-      alert(`List created with ${entries.length} openings.`);
+      await startEditList(saved.list.id);
+      showNotice(`List created with ${payload.length} openings.`, "success");
     } catch (error) {
-      alert(error.message || "Could not generate quick list");
+      showNotice(error.message || "Could not generate quick list", "error");
     } finally {
       setIsGeneratingQuickList(false);
     }
@@ -210,40 +222,40 @@ export default function CreateListPage() {
     const selected = myCustomLists.find((item) => item.id === listId);
     setListName(selected?.name || "");
 
-    const { data, error } = await supabase
-      .from("list_openings")
-      .select("anime_id,anime_title,opening_label,youtube_video_id,thumbnail_url,order_index")
-      .eq("list_id", listId)
-      .order("order_index", { ascending: true });
-
-    if (error) {
-      alert(error.message);
+    try {
+      const data = await apiGet(`/api/lists/${listId}/openings`);
+      setListItems(data.openings || []);
+    } catch (error) {
+      showNotice(error.message || "Could not load list", "error");
       return;
     }
-
-    setListItems(data || []);
   }
 
   async function handleDeleteList(listId) {
     if (!identity || !listId) return;
 
     const list = myCustomLists.find((item) => item.id === listId);
-    const confirmDelete = window.confirm(
-      `Delete list "${list?.name || "Custom list"}"? This cannot be undone.`,
-    );
+    setConfirmDialog({
+      open: true,
+      title: "Delete list?",
+      message: `Delete list "${list?.name || "Custom list"}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      danger: true,
+      payloadId: listId,
+    });
+  }
 
-    if (!confirmDelete) return;
+  async function confirmDeleteList() {
+    const listId = confirmDialog.payloadId;
+    if (!identity || !listId) {
+      setConfirmDialog((prev) => ({ ...prev, open: false, payloadId: "" }));
+      return;
+    }
 
     setDeletingListId(listId);
+    setConfirmDialog((prev) => ({ ...prev, open: false }));
     try {
-      const { error } = await supabase
-        .from("lists")
-        .delete()
-        .eq("id", listId)
-        .eq("created_by", identity.userId)
-        .eq("is_preset", false);
-
-      if (error) throw error;
+      await apiDelete(`/api/lists/${listId}`);
 
       if (editingListId === listId) {
         resetEditor();
@@ -251,9 +263,10 @@ export default function CreateListPage() {
 
       await loadMyLists();
     } catch (error) {
-      alert(error.message || "Could not delete list. If it is used by a room, delete/finish that room first.");
+      showNotice(error.message || "Could not delete list. If it is used by a room, delete/finish that room first.", "error");
     } finally {
       setDeletingListId("");
+      setConfirmDialog((prev) => ({ ...prev, payloadId: "" }));
     }
   }
 
@@ -262,61 +275,64 @@ export default function CreateListPage() {
 
     setSaving(true);
     try {
-      let listId = editingListId;
-
-      if (!editingListId) {
-        const { data: created, error: createError } = await supabase
-          .from("lists")
-          .insert({
-            name: listName.trim(),
-            created_by: identity.userId,
-            is_preset: false,
-          })
-          .select("id")
-          .single();
-
-        if (createError) throw createError;
-        listId = created.id;
-      } else {
-        const { error: renameError } = await supabase
-          .from("lists")
-          .update({ name: listName.trim() })
-          .eq("id", editingListId)
-          .eq("created_by", identity.userId);
-
-        if (renameError) throw renameError;
-
-        const { error: deleteError } = await supabase
-          .from("list_openings")
-          .delete()
-          .eq("list_id", editingListId);
-
-        if (deleteError) throw deleteError;
-      }
-
-      const payload = listItems.map((item, index) => ({
-        list_id: listId,
+      const payload = listItems.map((item) => ({
         anime_id: item.anime_id,
         anime_title: item.anime_title,
         opening_label: item.opening_label,
         youtube_video_id: item.youtube_video_id,
         thumbnail_url: item.thumbnail_url,
-        order_index: index,
       }));
 
-      const { error: insertError } = await supabase.from("list_openings").insert(payload);
-      if (insertError) throw insertError;
+      await apiPost("/api/lists/save", {
+        listId: editingListId || undefined,
+        name: listName.trim(),
+        isPreset: false,
+        openings: payload,
+      });
 
       navigate("/");
     } catch (error) {
-      alert(error.message || "Could not save list");
+      showNotice(error.message || "Could not save list", "error");
     } finally {
       setSaving(false);
     }
   }
 
+  function showNotice(message, tone = "error") {
+    setUiNotice({
+      message: String(message || "Unexpected error"),
+      tone,
+    });
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-12">
+      {uiNotice ? (
+        <div
+          className={`mb-4 text-sm px-4 py-3 rounded-xl border flex items-start gap-3 animate-fade-in ${
+            uiNotice.tone === "success"
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+              : "border-rose-500/40 bg-rose-500/10 text-rose-100"
+          }`}
+          role="alert"
+        >
+          {uiNotice.tone === "success" ? (
+            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          )}
+          <span className="flex-1">{uiNotice.message}</span>
+          <button
+            type="button"
+            className="p-1 rounded-md hover:bg-black/20 transition-colors"
+            onClick={() => setUiNotice(null)}
+            aria-label="Close notice"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      ) : null}
+
       <header className="flex flex-wrap items-center justify-between gap-6 mb-12">
         <div className="flex items-center gap-4">
           <button 
@@ -623,6 +639,51 @@ export default function CreateListPage() {
           </section>
         </div>
       </div>
+
+      <AnimatePresence>
+        {confirmDialog.open ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl p-6"
+            >
+              <div className="flex items-start gap-3 mb-4">
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-rose-500/15 text-rose-300">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-100">{confirmDialog.title}</h3>
+                  <p className="text-sm text-slate-300 mt-1">{confirmDialog.message}</p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 mt-6">
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => setConfirmDialog((prev) => ({ ...prev, open: false, payloadId: "" }))}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary btn-danger"
+                  onClick={confirmDeleteList}
+                >
+                  {confirmDialog.confirmLabel}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }

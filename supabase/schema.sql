@@ -114,14 +114,125 @@ create table if not exists room_rankings (
 
 create index if not exists idx_room_rankings_room on room_rankings(room_id, ranking_type);
 
--- RLS intentionally disabled for side-project simplicity
-alter table lists disable row level security;
-alter table app_users disable row level security;
-alter table app_user_credentials disable row level security;
-alter table app_user_sessions disable row level security;
-alter table list_openings disable row level security;
-alter table rooms disable row level security;
-alter table room_members disable row level security;
-alter table ratings disable row level security;
-alter table room_messages disable row level security;
-alter table room_rankings disable row level security;
+alter table app_users enable row level security;
+alter table app_user_credentials enable row level security;
+alter table app_user_sessions enable row level security;
+alter table lists enable row level security;
+alter table list_openings enable row level security;
+alter table rooms enable row level security;
+alter table room_members enable row level security;
+alter table ratings enable row level security;
+alter table room_messages enable row level security;
+alter table room_rankings enable row level security;
+
+drop policy if exists app_users_no_access on app_users;
+create policy app_users_no_access on app_users
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+drop policy if exists app_user_credentials_no_access on app_user_credentials;
+create policy app_user_credentials_no_access on app_user_credentials
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+drop policy if exists app_user_sessions_no_access on app_user_sessions;
+create policy app_user_sessions_no_access on app_user_sessions
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+drop policy if exists lists_read_all on lists;
+create policy lists_read_all on lists
+  for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists lists_write_blocked on lists;
+create policy lists_write_blocked on lists
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+drop policy if exists list_openings_read_all on list_openings;
+create policy list_openings_read_all on list_openings
+  for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists list_openings_write_blocked on list_openings;
+create policy list_openings_write_blocked on list_openings
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+drop policy if exists rooms_read_all on rooms;
+create policy rooms_read_all on rooms
+  for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists rooms_write_blocked on rooms;
+create policy rooms_write_blocked on rooms
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+drop policy if exists room_members_read_all on room_members;
+create policy room_members_read_all on room_members
+  for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists room_members_write_blocked on room_members;
+create policy room_members_write_blocked on room_members
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+drop policy if exists ratings_read_all on ratings;
+create policy ratings_read_all on ratings
+  for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists ratings_write_blocked on ratings;
+create policy ratings_write_blocked on ratings
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+drop policy if exists room_messages_read_all on room_messages;
+create policy room_messages_read_all on room_messages
+  for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists room_messages_write_blocked on room_messages;
+create policy room_messages_write_blocked on room_messages
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+drop policy if exists room_rankings_read_all on room_rankings;
+create policy room_rankings_read_all on room_rankings
+  for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists room_rankings_write_blocked on room_rankings;
+create policy room_rankings_write_blocked on room_rankings
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);

@@ -7,6 +7,7 @@
     "build": "echo \"No build step for PartyKit\""
   },
   "dependencies": {
-    "partykit": "^0.0.112"
+    "partykit": "^0.0.112",
+    "zod": "^4.3.6"
   }
 }

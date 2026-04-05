@@ -12,7 +12,9 @@ import {
   Star, 
   RefreshCw,
   Layout,
-  Music
+  Music,
+  AlertTriangle,
+  X
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -25,6 +27,7 @@ export default function RankingsPage() {
   const [ratings, setRatings] = useState([]);
   const [storedRankings, setStoredRankings] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [uiNotice, setUiNotice] = useState(null);
 
   useEffect(() => {
     async function load() {
@@ -63,7 +66,7 @@ export default function RankingsPage() {
         setRatings(ratingsData || []);
         setStoredRankings(rankingsData || []);
       } catch (err) {
-        alert(err.message);
+        showNotice(err.message || "Could not load rankings");
       } finally {
         setLoading(false);
       }
@@ -71,6 +74,22 @@ export default function RankingsPage() {
 
     load();
   }, [roomId]);
+
+  useEffect(() => {
+    if (!uiNotice) return;
+
+    const timeout = window.setTimeout(() => {
+      setUiNotice(null);
+    }, 4000);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [uiNotice]);
+
+  function showNotice(message) {
+    setUiNotice({ message: String(message || "Unexpected error") });
+  }
 
   const ranking = useMemo(() => {
     const hasStored = storedRankings.length > 0;
@@ -118,6 +137,24 @@ export default function RankingsPage() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-12">
+      {uiNotice ? (
+        <div
+          className="mb-4 text-sm px-4 py-3 rounded-xl border border-rose-500/40 bg-rose-500/10 text-rose-100 flex items-start gap-3 animate-fade-in"
+          role="alert"
+        >
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span className="flex-1">{uiNotice.message}</span>
+          <button
+            type="button"
+            className="p-1 rounded-md hover:bg-black/20 transition-colors"
+            onClick={() => setUiNotice(null)}
+            aria-label="Close notice"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      ) : null}
+
       <header className="flex flex-wrap items-center justify-between gap-6 mb-12">
         <div className="flex items-center gap-4">
           <Link to={`/room/${roomId}`} className="p-2 hover:bg-slate-800 rounded-lg transition-colors">

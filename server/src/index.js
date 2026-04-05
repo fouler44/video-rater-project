@@ -4,7 +4,9 @@ import cors from "cors";
 import morgan from "morgan";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import rateLimit from "express-rate-limit";
+import { z } from "zod";
 import { customAlphabet } from "nanoid";
 import {
   buildMalTopOpeningsDataset,
@@ -17,14 +19,107 @@ import {
 import { hasSupabaseConfig, supabaseAdmin } from "./supabase.js";
 
 const app = express();
+const REQUIRED_ENV_VARS = [
+  "CLIENT_ORIGIN",
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "PARTYKIT_INTERNAL_SECRET",
+  "PARTYKIT_API_SIGNING_SECRET",
+];
+
+for (const name of REQUIRED_ENV_VARS) {
+  const value = String(process.env[name] || "").trim();
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+}
+
 const port = Number(process.env.PORT || 4000);
-const clientOrigin = process.env.CLIENT_ORIGIN || "http://localhost:5173";
+const clientOrigin = String(process.env.CLIENT_ORIGIN || "").trim();
 const makeInviteCode = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 6);
 const makeSessionToken = () => randomBytes(48).toString("hex");
 const BULK_INSERT_CHUNK_SIZE = 500;
 const YOUTUBE_ENRICH_DEFAULT_LIMIT = 120;
 const SESSION_TTL_DAYS = 30;
 const USERNAME_REGEX = /^[a-z0-9_]{3,24}$/;
+const PARTYKIT_INTERNAL_SECRET = String(process.env.PARTYKIT_INTERNAL_SECRET || "").trim();
+const PARTYKIT_API_SIGNING_SECRET = String(process.env.PARTYKIT_API_SIGNING_SECRET || "").trim();
+const INTERNAL_MAX_SKEW_MS = 30_000;
+const usedInternalNonces = new Map();
+
+const RoomIdSchema = z.string().uuid();
+const ListIdSchema = z.string().uuid();
+const ScoreSchema = z.number().int().min(1).max(10);
+const RoomStatusSchema = z.enum(["waiting", "playing", "finished"]);
+
+const SaveListSchema = z.object({
+  listId: z.string().uuid().optional(),
+  name: z.string().trim().min(1).max(120),
+  isPreset: z.boolean().optional().default(false),
+  openings: z.array(
+    z.object({
+      anime_id: z.number().int().positive(),
+      anime_title: z.string().trim().min(1).max(240),
+      opening_label: z.string().trim().min(1).max(120),
+      youtube_video_id: z.string().trim().max(30).nullable().optional(),
+      thumbnail_url: z.string().trim().max(600).nullable().optional(),
+    }),
+  ).min(1),
+});
+
+function logEvent(level, event, details = {}) {
+  const payload = {
+    ts: new Date().toISOString(),
+    level,
+    event,
+    ...details,
+  };
+
+  const line = JSON.stringify(payload);
+  if (level === "error") {
+    console.error(line);
+    return;
+  }
+
+  console.log(line);
+}
+
+function cleanupInternalNonces() {
+  const now = Date.now();
+  for (const [nonce, expiresAt] of usedInternalNonces.entries()) {
+    if (expiresAt <= now) {
+      usedInternalNonces.delete(nonce);
+    }
+  }
+}
+
+function hashRawBody(rawBody = "") {
+  return createHash("sha256").update(String(rawBody || "")).digest("hex");
+}
+
+function buildInternalSignature({ timestamp, nonce, method, path, bodyHash }) {
+  const canonical = `${timestamp}.${nonce}.${method.toUpperCase()}.${path}.${bodyHash}`;
+  return createHmac("sha256", PARTYKIT_API_SIGNING_SECRET).update(canonical).digest("hex");
+}
+
+function parseSchema(schema, payload, res, message = "Invalid request payload") {
+  const parsed = schema.safeParse(payload);
+  if (!parsed.success) {
+    res.status(400).json({ error: message });
+    return null;
+  }
+  return parsed.data;
+}
+
+function internalError(req, res, error, event = "internal_error") {
+  logEvent("error", event, {
+    requestId: req.requestId,
+    method: req.method,
+    path: req.originalUrl,
+    error: String(error?.stack || error?.message || error || "unknown"),
+  });
+  return res.status(500).json({ error: "Internal server error" });
+}
 
 function sleep(ms = 0) {
   const safeMs = Math.max(0, Number(ms) || 0);
@@ -33,6 +128,38 @@ function sleep(ms = 0) {
     setTimeout(resolve, safeMs);
   });
 }
+
+const authLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 50,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many auth attempts. Please try again later." },
+});
+
+const joinByCodeLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 80,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many room code attempts. Please try again later." },
+});
+
+const adminLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many admin requests. Please try again later." },
+});
+
+const externalApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Rate limit reached. Please try again shortly." },
+});
 
 function normalizeUsername(value = "") {
   return String(value || "").trim().toLowerCase();
@@ -154,6 +281,17 @@ async function requireAuth(req, res) {
     res.status(401).json({ error: "Unauthorized" });
     return null;
   }
+  req.auth = auth;
+  return auth;
+}
+
+async function requireAdmin(req, res) {
+  const auth = await requireAuth(req, res);
+  if (!auth) return null;
+  if (auth.user.role !== "admin") {
+    res.status(403).json({ error: "Forbidden" });
+    return null;
+  }
   return auth;
 }
 
@@ -163,6 +301,91 @@ function canControlRoom(user, room) {
     String(room.owner_user_id || "") === String(user.id || "") ||
     String(room.host_uuid || "") === String(user.id || "")
   );
+}
+
+function ensureInternalPartykit(req, res) {
+  const providedSecret = String(req.headers["x-partykit-secret"] || "").trim();
+  if (providedSecret !== PARTYKIT_INTERNAL_SECRET) {
+    res.status(401).json({ error: "Unauthorized PartyKit request" });
+    return false;
+  }
+
+  const timestampRaw = String(req.headers["x-partykit-timestamp"] || "").trim();
+  const nonce = String(req.headers["x-partykit-nonce"] || "").trim();
+  const signature = String(req.headers["x-partykit-signature"] || "").trim();
+
+  if (!timestampRaw || !nonce || !signature) {
+    res.status(401).json({ error: "Missing PartyKit signature headers" });
+    return false;
+  }
+
+  const timestamp = Number(timestampRaw);
+  if (!Number.isFinite(timestamp)) {
+    res.status(401).json({ error: "Invalid PartyKit timestamp" });
+    return false;
+  }
+
+  const ageMs = Math.abs(Date.now() - timestamp);
+  if (ageMs > INTERNAL_MAX_SKEW_MS) {
+    res.status(401).json({ error: "Expired PartyKit request" });
+    return false;
+  }
+
+  cleanupInternalNonces();
+  if (usedInternalNonces.has(nonce)) {
+    res.status(401).json({ error: "Replay detected" });
+    return false;
+  }
+
+  const bodyHash = hashRawBody(req.rawBody || "");
+  const expected = buildInternalSignature({
+    timestamp: String(timestamp),
+    nonce,
+    method: req.method,
+    path: req.originalUrl,
+    bodyHash,
+  });
+
+  if (!safeEqHex(expected, signature)) {
+    res.status(401).json({ error: "Invalid PartyKit signature" });
+    return false;
+  }
+
+  usedInternalNonces.set(nonce, Date.now() + INTERNAL_MAX_SKEW_MS);
+
+  return true;
+}
+
+async function fetchRoomParticipants(roomId) {
+  const { data: membersData, error: membersError } = await supabaseAdmin
+    .from("room_members")
+    .select("room_id,user_uuid,display_name,avatar_url,joined_at")
+    .eq("room_id", roomId)
+    .order("joined_at", { ascending: true });
+
+  if (!membersError && membersData) {
+    return membersData.map((row) => ({
+      user_uuid: row.user_uuid,
+      display_name: row.display_name,
+      avatar_url: row.avatar_url || null,
+    }));
+  }
+
+  return [];
+}
+
+async function fetchListOpenings(listId) {
+  const { data, error } = await supabaseAdmin
+    .from("list_openings")
+    .select("id,order_index,youtube_video_id,anime_title,opening_label")
+    .eq("list_id", listId)
+    .order("order_index", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message || "Could not load list openings");
+  }
+
+  return data || [];
 }
 
 async function upsertRoomMembership(roomId, user) {
@@ -175,22 +398,123 @@ async function upsertRoomMembership(roomId, user) {
   };
 
   const { error } = await supabaseAdmin.from("room_members").upsert(payload);
-  if (!error) return;
-
-  await supabaseAdmin.from("room_participants").upsert({
-    room_id: roomId,
-    user_uuid: user.id,
-    user_name: user.displayName,
-    avatar_url: user.avatarUrl || null,
-  });
+  if (error) {
+    throw new Error(error.message || "Could not upsert room membership");
+  }
 }
 
 app.use(cors({ origin: clientOrigin, credentials: true }));
-app.use(express.json({ limit: "1mb" }));
-app.use(morgan("dev"));
+app.use((req, res, next) => {
+  req.requestId = randomUUID();
+  res.setHeader("x-request-id", req.requestId);
+  next();
+});
 
-app.get("/api/health", (_, res) => {
-  res.json({ ok: true, ts: Date.now() });
+app.use(express.json({
+  limit: "1mb",
+  verify: (req, _res, buf) => {
+    req.rawBody = buf.toString("utf8");
+  },
+}));
+
+app.use((req, _res, next) => {
+  logEvent("info", "http_request", {
+    requestId: req.requestId,
+    method: req.method,
+    path: req.originalUrl,
+    ip: req.ip,
+  });
+  next();
+});
+
+app.use(morgan("tiny"));
+
+app.use((req, res, next) => {
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (res.statusCode >= 500) {
+      logEvent("error", "http_response_error", {
+        requestId: req.requestId,
+        method: req.method,
+        path: req.originalUrl,
+        statusCode: res.statusCode,
+        error: body?.error || "unknown",
+      });
+      return originalJson({ error: "Internal server error" });
+    }
+    return originalJson(body);
+  };
+  next();
+});
+
+app.use("/api/auth", authLimiter);
+app.use("/api/jikan", externalApiLimiter);
+app.use("/api/youtube", externalApiLimiter);
+app.use("/api/admin", adminLimiter);
+
+app.get("/api/health", async (req, res) => {
+  const checks = {
+    supabase: false,
+    youtubeApiKey: Boolean(String(process.env.YOUTUBE_API_KEY || "").trim()),
+    partykitSecrets: Boolean(PARTYKIT_INTERNAL_SECRET && PARTYKIT_API_SIGNING_SECRET),
+  };
+
+  try {
+    if (ensureSupabase(res)) {
+      const { error } = await supabaseAdmin.from("app_users").select("id").limit(1);
+      checks.supabase = !error;
+    }
+  } catch (error) {
+    logEvent("error", "health_supabase_failed", {
+      requestId: req.requestId,
+      error: String(error?.message || error),
+    });
+  }
+
+  const ok = checks.supabase && checks.partykitSecrets;
+  res.status(ok ? 200 : 503).json({ ok, ts: Date.now(), checks });
+});
+
+app.post("/api/internal/auth/session/verify", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  if (!ensureInternalPartykit(req, res)) return;
+
+  const token = String(req.body?.token || "").trim();
+  if (!token) {
+    return res.status(400).json({ error: "Missing session token" });
+  }
+
+  try {
+    const { data: session, error: sessionError } = await supabaseAdmin
+      .from("app_user_sessions")
+      .select("token,user_id,expires_at")
+      .eq("token", token)
+      .maybeSingle();
+
+    if (sessionError || !session) {
+      return res.status(401).json({ error: "Invalid session token" });
+    }
+
+    const expired = new Date(session.expires_at).getTime() <= Date.now();
+    if (expired) {
+      await supabaseAdmin.from("app_user_sessions").delete().eq("token", token);
+      return res.status(401).json({ error: "Session expired" });
+    }
+
+    const { data: user, error: userError } = await supabaseAdmin
+      .from("app_users")
+      .select("id,username,display_name,avatar_url,role")
+      .eq("id", session.user_id)
+      .maybeSingle();
+
+    if (userError || !user) {
+      return res.status(401).json({ error: "Invalid session user" });
+    }
+
+    return res.json({ user: mapUser(user), expiresAt: session.expires_at });
+  } catch (error) {
+    return internalError(req, res, error, "internal_auth_verify_failed");
+  }
 });
 
 app.post("/api/auth/register", async (req, res) => {
@@ -392,16 +716,152 @@ app.get("/api/lists/preset/top-mal-openings", async (req, res) => {
   }
 });
 
+app.get("/api/lists", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const { data, error } = await supabaseAdmin
+    .from("lists")
+    .select("id,name,is_preset,created_at,created_by")
+    .or(`is_preset.eq.true,created_by.eq.${auth.user.id}`)
+    .order("created_at", { ascending: false })
+    .limit(200);
+
+  if (error) return internalError(req, res, error, "lists_fetch_failed");
+  return res.json({ lists: data || [] });
+});
+
+app.get("/api/lists/:listId/openings", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const listId = parseSchema(ListIdSchema, String(req.params.listId || ""), res, "Invalid listId");
+  if (!listId) return;
+
+  const { data: list, error: listError } = await supabaseAdmin
+    .from("lists")
+    .select("id,created_by,is_preset")
+    .eq("id", listId)
+    .maybeSingle();
+
+  if (listError) return internalError(req, res, listError, "list_openings_owner_check_failed");
+  if (!list) return res.status(404).json({ error: "List not found" });
+
+  const canRead = list.is_preset || String(list.created_by || "") === auth.user.id || auth.user.role === "admin";
+  if (!canRead) return res.status(403).json({ error: "Forbidden" });
+
+  const { data, error } = await supabaseAdmin
+    .from("list_openings")
+    .select("id,anime_id,anime_title,opening_label,youtube_video_id,thumbnail_url,order_index")
+    .eq("list_id", listId)
+    .order("order_index", { ascending: true });
+
+  if (error) return internalError(req, res, error, "list_openings_fetch_failed");
+  return res.json({ openings: data || [] });
+});
+
+app.post("/api/lists/save", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const input = parseSchema(SaveListSchema, req.body || {}, res, "Invalid list payload");
+  if (!input) return;
+
+  try {
+    let listId = input.listId || "";
+
+    if (!listId) {
+      const { data: created, error: createError } = await supabaseAdmin
+        .from("lists")
+        .insert({
+          name: input.name,
+          created_by: auth.user.id,
+          is_preset: Boolean(input.isPreset),
+        })
+        .select("id")
+        .single();
+
+      if (createError) return internalError(req, res, createError, "list_create_failed");
+      listId = created.id;
+    } else {
+      const { data: list, error: listError } = await supabaseAdmin
+        .from("lists")
+        .select("id,created_by,is_preset")
+        .eq("id", listId)
+        .maybeSingle();
+
+      if (listError) return internalError(req, res, listError, "list_update_owner_check_failed");
+      if (!list) return res.status(404).json({ error: "List not found" });
+
+      const canEdit = auth.user.role === "admin" || String(list.created_by || "") === auth.user.id;
+      if (!canEdit) return res.status(403).json({ error: "Forbidden" });
+
+      const { error: renameError } = await supabaseAdmin
+        .from("lists")
+        .update({ name: input.name, is_preset: Boolean(input.isPreset) })
+        .eq("id", listId);
+
+      if (renameError) return internalError(req, res, renameError, "list_update_failed");
+
+      const { error: deleteError } = await supabaseAdmin
+        .from("list_openings")
+        .delete()
+        .eq("list_id", listId);
+
+      if (deleteError) return internalError(req, res, deleteError, "list_openings_clear_failed");
+    }
+
+    const rows = input.openings.map((opening, index) => ({
+      list_id: listId,
+      anime_id: opening.anime_id,
+      anime_title: opening.anime_title,
+      opening_label: opening.opening_label,
+      youtube_video_id: String(opening.youtube_video_id || "").trim() || null,
+      thumbnail_url: String(opening.thumbnail_url || "").trim() || null,
+      order_index: index,
+    }));
+
+    const { error: insertError } = await supabaseAdmin.from("list_openings").insert(rows);
+    if (insertError) return internalError(req, res, insertError, "list_openings_insert_failed");
+
+    return res.status(201).json({ list: { id: listId, name: input.name } });
+  } catch (error) {
+    return internalError(req, res, error, "list_save_failed");
+  }
+});
+
+app.delete("/api/lists/:listId", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const listId = parseSchema(ListIdSchema, String(req.params.listId || ""), res, "Invalid listId");
+  if (!listId) return;
+
+  const { data: list, error: listError } = await supabaseAdmin
+    .from("lists")
+    .select("id,created_by")
+    .eq("id", listId)
+    .maybeSingle();
+
+  if (listError) return internalError(req, res, listError, "list_delete_owner_check_failed");
+  if (!list) return res.status(404).json({ error: "List not found" });
+
+  const canDelete = auth.user.role === "admin" || String(list.created_by || "") === auth.user.id;
+  if (!canDelete) return res.status(403).json({ error: "Forbidden" });
+
+  const { error } = await supabaseAdmin.from("lists").delete().eq("id", listId);
+  if (error) return internalError(req, res, error, "list_delete_failed");
+  return res.status(204).send();
+});
+
 app.post("/api/admin/import/top-mal-openings", async (req, res) => {
   if (!ensureSupabase(res)) return;
-
-  const importSecret = process.env.IMPORT_PRESET_SECRET;
-  if (importSecret) {
-    const providedSecret = String(req.headers["x-import-secret"] || "");
-    if (providedSecret !== importSecret) {
-      return res.status(403).json({ error: "Invalid import secret" });
-    }
-  }
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
 
   const {
     topLimit = 300,
@@ -476,14 +936,8 @@ app.post("/api/admin/import/top-mal-openings", async (req, res) => {
 
 app.post("/api/admin/enrich-youtube", async (req, res) => {
   if (!ensureSupabase(res)) return;
-
-  const importSecret = process.env.IMPORT_PRESET_SECRET;
-  if (importSecret) {
-    const providedSecret = String(req.headers["x-import-secret"] || "");
-    if (providedSecret !== importSecret) {
-      return res.status(403).json({ error: "Invalid import secret" });
-    }
-  }
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
 
   const {
     listId,
@@ -591,6 +1045,165 @@ function ensureSupabase(res) {
   return true;
 }
 
+app.get("/api/internal/rooms/:roomId/state", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  if (!ensureInternalPartykit(req, res)) return;
+
+  const roomId = String(req.params.roomId || "").trim();
+  if (!roomId) {
+    return res.status(400).json({ error: "Missing room id" });
+  }
+
+  const { data: room, error: roomError } = await supabaseAdmin
+    .from("rooms")
+    .select("id,name,list_id,current_opening_index,status,host_uuid,owner_user_id")
+    .eq("id", roomId)
+    .maybeSingle();
+
+  if (roomError) return res.status(500).json({ error: roomError.message });
+  if (!room) return res.status(404).json({ error: "Room not found" });
+
+  try {
+    const openings = await fetchListOpenings(room.list_id);
+    const currentOpening = openings.find((item) => item.order_index === room.current_opening_index) || null;
+    const members = await fetchRoomParticipants(roomId);
+
+    let currentOpeningRatings = [];
+    if (currentOpening?.id) {
+      const { data: ratingsData, error: ratingsError } = await supabaseAdmin
+        .from("ratings")
+        .select("user_uuid,score,list_opening_id")
+        .eq("room_id", roomId)
+        .eq("list_opening_id", currentOpening.id);
+
+      if (ratingsError) {
+        return res.status(500).json({ error: ratingsError.message });
+      }
+
+      currentOpeningRatings = ratingsData || [];
+    }
+
+    res.json({
+      room,
+      openings,
+      currentOpening,
+      currentOpeningRatings,
+      members,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not build room state" });
+  }
+});
+
+app.post("/api/internal/rooms/:roomId/host", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  if (!ensureInternalPartykit(req, res)) return;
+
+  const roomId = String(req.params.roomId || "").trim();
+  const hostUuid = String(req.body?.hostUuid || "").trim();
+
+  if (!roomId || !hostUuid) {
+    return res.status(400).json({ error: "Missing roomId or hostUuid" });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("rooms")
+    .update({ host_uuid: hostUuid })
+    .eq("id", roomId)
+    .select("id,host_uuid")
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ room: data });
+});
+
+app.post("/api/internal/rooms/:roomId/advance", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  if (!ensureInternalPartykit(req, res)) return;
+
+  const roomId = String(req.params.roomId || "").trim();
+  const actorUserUuid = String(req.body?.actorUserUuid || "").trim();
+  const requestedIndex = Number(req.body?.targetIndex);
+  const forceFinish = Boolean(req.body?.finish);
+
+  if (!roomId || !actorUserUuid) {
+    return res.status(400).json({ error: "Missing roomId or actorUserUuid" });
+  }
+
+  const { data: room, error: roomError } = await supabaseAdmin
+    .from("rooms")
+    .select("id,list_id,current_opening_index,status,host_uuid,owner_user_id")
+    .eq("id", roomId)
+    .maybeSingle();
+
+  if (roomError) return res.status(500).json({ error: roomError.message });
+  if (!room) return res.status(404).json({ error: "Room not found" });
+
+  const canAct =
+    String(room.host_uuid || "") === actorUserUuid ||
+    String(room.owner_user_id || "") === actorUserUuid;
+
+  if (!canAct) {
+    return res.status(403).json({ error: "Only host or owner can advance openings" });
+  }
+
+  try {
+    const openings = await fetchListOpenings(room.list_id);
+    if (openings.length === 0) {
+      return res.status(400).json({ error: "No openings in room list" });
+    }
+
+    const lastIndex = openings.length - 1;
+    const previousOpeningIndex = Number(room.current_opening_index || 0);
+    const fallbackIndex = previousOpeningIndex + 1;
+    const targetIndex = Number.isInteger(requestedIndex) ? requestedIndex : fallbackIndex;
+    const shouldFinish = forceFinish || targetIndex > lastIndex || previousOpeningIndex >= lastIndex;
+
+    if (shouldFinish) {
+      const { data: finishedRoom, error: finishedError } = await supabaseAdmin
+        .from("rooms")
+        .update({
+          status: "finished",
+          current_opening_index: Math.max(0, Math.min(previousOpeningIndex, lastIndex)),
+        })
+        .eq("id", roomId)
+        .select("id,status,current_opening_index,host_uuid")
+        .single();
+
+      if (finishedError) return res.status(500).json({ error: finishedError.message });
+
+      return res.json({
+        room: finishedRoom,
+        previousOpeningIndex,
+        nextOpening: null,
+      });
+    }
+
+    const safeTargetIndex = Math.max(0, Math.min(lastIndex, targetIndex));
+    const nextOpening = openings.find((item) => item.order_index === safeTargetIndex) || null;
+
+    const { data: updatedRoom, error: updateError } = await supabaseAdmin
+      .from("rooms")
+      .update({
+        status: "playing",
+        current_opening_index: safeTargetIndex,
+      })
+      .eq("id", roomId)
+      .select("id,status,current_opening_index,host_uuid")
+      .single();
+
+    if (updateError) return res.status(500).json({ error: updateError.message });
+
+    return res.json({
+      room: updatedRoom,
+      previousOpeningIndex,
+      nextOpening,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Could not advance opening" });
+  }
+});
+
 app.get("/api/rooms/public", async (_, res) => {
   if (!ensureSupabase(res)) return;
 
@@ -598,7 +1211,7 @@ app.get("/api/rooms/public", async (_, res) => {
     .from("rooms")
     .select("id,name,is_public,invite_code,current_opening_index,status,created_at,owner_user_id,lists(name)")
     .eq("is_public", true)
-    .in("status", ["active", "waiting", "playing"])
+    .in("status", ["waiting", "playing"])
     .order("created_at", { ascending: false })
     .limit(50);
 
@@ -606,7 +1219,7 @@ app.get("/api/rooms/public", async (_, res) => {
   res.json({ rooms: data || [] });
 });
 
-app.get("/api/rooms/by-code/:code", async (req, res) => {
+app.get("/api/rooms/by-code/:code", joinByCodeLimiter, async (req, res) => {
   if (!ensureSupabase(res)) return;
 
   const { data, error } = await supabaseAdmin
@@ -618,6 +1231,23 @@ app.get("/api/rooms/by-code/:code", async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   if (!data) return res.status(404).json({ error: "Room not found" });
   res.json({ room: data });
+});
+
+app.post("/api/rooms/:roomId/presence", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const roomId = parseSchema(RoomIdSchema, String(req.params.roomId || ""), res, "Invalid roomId");
+  if (!roomId) return;
+
+  try {
+    await upsertRoomMembership(roomId, auth.user);
+    return res.status(204).send();
+  } catch (error) {
+    return internalError(req, res, error, "room_presence_upsert_failed");
+  }
 });
 
 app.post("/api/rooms", async (req, res) => {
@@ -663,11 +1293,10 @@ app.post("/api/rooms/status", async (req, res) => {
   const auth = await requireAuth(req, res);
   if (!auth) return;
 
-  const roomId = String(req.body?.roomId || "").trim();
-  const status = String(req.body?.status || "").trim();
-  const allowedStatus = ["waiting", "playing", "finished", "active"];
+  const roomId = parseSchema(RoomIdSchema, String(req.body?.roomId || "").trim(), res, "Invalid roomId");
+  const status = parseSchema(RoomStatusSchema, String(req.body?.status || "").trim(), res, "Invalid status");
 
-  if (!roomId || !allowedStatus.includes(status)) {
+  if (!roomId || !status) {
     return res.status(400).json({ error: "Invalid roomId or status" });
   }
 
@@ -700,22 +1329,42 @@ app.post("/api/rooms/rate", async (req, res) => {
   const auth = await requireAuth(req, res);
   if (!auth) return;
 
-  const roomId = String(req.body?.roomId || "").trim();
-  const openingId = String(req.body?.openingId || "").trim();
-  const score = Number(req.body?.score);
+  const roomId = parseSchema(RoomIdSchema, String(req.body?.roomId || "").trim(), res, "Invalid roomId");
+  const openingId = parseSchema(z.string().uuid(), String(req.body?.openingId || "").trim(), res, "Invalid openingId");
+  const score = parseSchema(ScoreSchema, Number(req.body?.score), res, "Invalid score");
 
-  if (!roomId || !openingId || !Number.isInteger(score) || score < 1 || score > 10) {
+  if (!roomId || !openingId || !score) {
     return res.status(400).json({ error: "Invalid rating payload" });
   }
 
   const { data: room, error: roomError } = await supabaseAdmin
     .from("rooms")
-    .select("id")
+    .select("id,list_id,status,current_opening_index")
     .eq("id", roomId)
     .maybeSingle();
 
   if (roomError) return res.status(500).json({ error: roomError.message });
   if (!room) return res.status(404).json({ error: "Room not found" });
+  if (room.status !== "playing") {
+    return res.status(409).json({ error: "Room is not currently accepting ratings" });
+  }
+
+  const { data: opening, error: openingError } = await supabaseAdmin
+    .from("list_openings")
+    .select("id,order_index")
+    .eq("id", openingId)
+    .eq("list_id", room.list_id)
+    .maybeSingle();
+
+  if (openingError) return res.status(500).json({ error: openingError.message });
+  if (!opening) {
+    return res.status(400).json({ error: "Opening does not belong to this room list" });
+  }
+
+  // Ratings are only writable for the room's currently active opening.
+  if (opening.order_index !== room.current_opening_index) {
+    return res.status(409).json({ error: "Ratings for this opening are locked" });
+  }
 
   await upsertRoomMembership(roomId, auth.user);
 
@@ -741,7 +1390,8 @@ app.post("/api/rooms/:roomId/advance", async (req, res) => {
   const auth = await requireAuth(req, res);
   if (!auth) return;
 
-  const roomId = req.params.roomId;
+  const roomId = parseSchema(RoomIdSchema, String(req.params.roomId || ""), res, "Invalid roomId");
+  if (!roomId) return;
   const parsedIndex = Number(req.body?.nextIndex);
 
   if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
@@ -750,7 +1400,7 @@ app.post("/api/rooms/:roomId/advance", async (req, res) => {
 
   const { data: room, error: roomError } = await supabaseAdmin
     .from("rooms")
-    .select("id,owner_user_id,host_uuid,status")
+    .select("id,owner_user_id,host_uuid,status,list_id")
     .eq("id", roomId)
     .single();
 
@@ -760,9 +1410,19 @@ app.post("/api/rooms/:roomId/advance", async (req, res) => {
     return res.status(403).json({ error: "Only the host/owner or admin can change the opening" });
   }
 
+  const openings = await fetchListOpenings(room.list_id);
+  if (openings.length === 0) {
+    return res.status(400).json({ error: "This room list has no openings" });
+  }
+
+  const maxIndex = openings.length - 1;
+  if (parsedIndex > maxIndex) {
+    return res.status(400).json({ error: `nextIndex is out of range (0-${maxIndex})` });
+  }
+
   const { data, error } = await supabaseAdmin
     .from("rooms")
-    .update({ current_opening_index: parsedIndex })
+    .update({ current_opening_index: parsedIndex, status: "playing" })
     .eq("id", roomId)
     .select("id,current_opening_index,status")
     .single();
@@ -777,7 +1437,8 @@ app.post("/api/rooms/:roomId/opening", async (req, res) => {
   const auth = await requireAuth(req, res);
   if (!auth) return;
 
-  const roomId = req.params.roomId;
+  const roomId = parseSchema(RoomIdSchema, String(req.params.roomId || ""), res, "Invalid roomId");
+  if (!roomId) return;
   const parsedIndex = Number(req.body?.openingIndex);
 
   if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
@@ -786,7 +1447,7 @@ app.post("/api/rooms/:roomId/opening", async (req, res) => {
 
   const { data: room, error: roomError } = await supabaseAdmin
     .from("rooms")
-    .select("id,owner_user_id,host_uuid")
+    .select("id,owner_user_id,host_uuid,list_id")
     .eq("id", roomId)
     .single();
 
@@ -796,9 +1457,19 @@ app.post("/api/rooms/:roomId/opening", async (req, res) => {
     return res.status(403).json({ error: "Only the host/owner or admin can change the opening" });
   }
 
+  const openings = await fetchListOpenings(room.list_id);
+  if (openings.length === 0) {
+    return res.status(400).json({ error: "This room list has no openings" });
+  }
+
+  const maxIndex = openings.length - 1;
+  if (parsedIndex > maxIndex) {
+    return res.status(400).json({ error: `openingIndex is out of range (0-${maxIndex})` });
+  }
+
   const { data, error } = await supabaseAdmin
     .from("rooms")
-    .update({ current_opening_index: parsedIndex })
+    .update({ current_opening_index: parsedIndex, status: "playing" })
     .eq("id", roomId)
     .select("id,current_opening_index,status")
     .single();
@@ -813,7 +1484,8 @@ app.post("/api/rooms/:roomId/end", async (req, res) => {
   const auth = await requireAuth(req, res);
   if (!auth) return;
 
-  const roomId = req.params.roomId;
+  const roomId = parseSchema(RoomIdSchema, String(req.params.roomId || ""), res, "Invalid roomId");
+  if (!roomId) return;
 
   const { data: roomData, error: roomError } = await supabaseAdmin
     .from("rooms")
@@ -893,7 +1565,8 @@ app.delete("/api/rooms/:roomId", async (req, res) => {
   const auth = await requireAuth(req, res);
   if (!auth) return;
 
-  const roomId = req.params.roomId;
+  const roomId = parseSchema(RoomIdSchema, String(req.params.roomId || ""), res, "Invalid roomId");
+  if (!roomId) return;
 
   const { data: room, error: roomError } = await supabaseAdmin
     .from("rooms")

@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiGet, apiPost } from "../lib/api";
 import { clearIdentity, getDefaultAvatar, getIdentity, patchIdentityUser, saveIdentity } from "../lib/identity";
-import { supabase } from "../lib/supabase";
-import { Plus, RefreshCw, User, Layout, Hash, Globe, Lock } from "lucide-react";
+import { Plus, RefreshCw, User, Layout, Hash, Globe, Lock, AlertTriangle, CheckCircle2, X } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
 export default function LobbyPage() {
@@ -21,12 +20,25 @@ export default function LobbyPage() {
   const [isPublic, setIsPublic] = useState(true);
   const [inviteCode, setInviteCode] = useState("");
   const [loading, setLoading] = useState(false);
+  const [uiNotice, setUiNotice] = useState(null);
 
   useEffect(() => {
     loadLists();
     loadPublicRooms();
     syncIdentityWithServer();
   }, []);
+
+  useEffect(() => {
+    if (!uiNotice) return;
+
+    const timeout = window.setTimeout(() => {
+      setUiNotice(null);
+    }, 3800);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [uiNotice]);
 
   async function syncIdentityWithServer() {
     const current = getIdentity();
@@ -49,15 +61,14 @@ export default function LobbyPage() {
   }
 
   async function loadLists() {
-    const { data, error } = await supabase
-      .from("lists")
-      .select("id,name,is_preset,created_at")
-      .order("created_at", { ascending: false })
-      .limit(100);
-
-    if (error) return;
-    setLists(data || []);
-    if (!selectedList && data?.[0]?.id) setSelectedList(data[0].id);
+    try {
+      const data = await apiGet("/api/lists");
+      const nextLists = data.lists || [];
+      setLists(nextLists);
+      if (!selectedList && nextLists?.[0]?.id) setSelectedList(nextLists[0].id);
+    } catch {
+      setLists([]);
+    }
   }
 
   async function loadPublicRooms() {
@@ -75,7 +86,7 @@ export default function LobbyPage() {
   function ensureIdentity() {
     const current = getIdentity();
     if (!current?.token || !current?.userId) {
-      alert("Login or register first");
+      showNotice("Login or register first", "warning");
       return null;
     }
     return current;
@@ -87,7 +98,7 @@ export default function LobbyPage() {
 
     const trimmed = displayName.trim();
     if (!trimmed) {
-      alert("Display name is required");
+      showNotice("Display name is required", "warning");
       return;
     }
 
@@ -100,9 +111,9 @@ export default function LobbyPage() {
       setIdentity(saved);
       setAvatarUrl(saved?.avatarUrl || "");
       setDisplayName(saved?.displayName || trimmed);
-      alert("Profile saved");
+      showNotice("Profile saved", "success");
     } catch (err) {
-      alert(err.message || "Failed to save profile");
+      showNotice(err.message || "Failed to save profile", "error");
     }
   }
 
@@ -120,7 +131,7 @@ export default function LobbyPage() {
 
       navigate(`/room/${data.room.id}`);
     } catch (err) {
-      alert(err.message || "Failed to create room");
+      showNotice(err.message || "Failed to create room", "error");
     }
   }
 
@@ -131,7 +142,7 @@ export default function LobbyPage() {
       const data = await apiGet(`/api/rooms/by-code/${inviteCode.trim().toUpperCase()}`);
       navigate(`/room/${data.room.id}`);
     } catch {
-      alert("Invalid room code");
+      showNotice("Invalid room code", "error");
     }
   }
 
@@ -141,38 +152,61 @@ export default function LobbyPage() {
 
     try {
       const generated = await apiGet("/api/lists/preset/top-mal-openings?limit=10");
-      const { data: list, error: listError } = await supabase
-        .from("lists")
-        .insert({
-          name: "Top 10 MAL Openings",
-          created_by: currentIdentity.userId,
-          is_preset: true,
-        })
-        .select("id")
-        .single();
-
-      if (listError) throw listError;
-
-      const entries = (generated.openings || []).map((opening, index) => ({
-        ...opening,
-        list_id: list.id,
-        order_index: index,
+      const entries = (generated.openings || []).map((opening) => ({
+        anime_id: opening.anime_id,
+        anime_title: opening.anime_title,
+        opening_label: opening.opening_label,
+        youtube_video_id: opening.youtube_video_id,
+        thumbnail_url: opening.thumbnail_url,
       }));
 
-      if (entries.length > 0) {
-        const { error: openingError } = await supabase.from("list_openings").insert(entries);
-        if (openingError) throw openingError;
-      }
+      const saved = await apiPost("/api/lists/save", {
+        name: "Top 10 MAL Openings",
+        isPreset: true,
+        openings: entries,
+      });
 
       await loadLists();
-      setSelectedList(list.id);
+      setSelectedList(saved.list.id);
     } catch {
-      alert("Could not generate preset list");
+      showNotice("Could not generate preset list", "error");
     }
+  }
+
+  function showNotice(message, tone = "error") {
+    setUiNotice({ message: String(message || "Unexpected error"), tone });
   }
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-12">
+      {uiNotice ? (
+        <div
+          className={`mb-4 text-sm px-4 py-3 rounded-xl border flex items-start gap-3 animate-fade-in ${
+            uiNotice.tone === "success"
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+              : uiNotice.tone === "warning"
+                ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
+                : "border-rose-500/40 bg-rose-500/10 text-rose-100"
+          }`}
+          role="alert"
+        >
+          {uiNotice.tone === "success" ? (
+            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          )}
+          <span className="flex-1">{uiNotice.message}</span>
+          <button
+            type="button"
+            className="p-1 rounded-md hover:bg-black/20 transition-colors"
+            onClick={() => setUiNotice(null)}
+            aria-label="Close notice"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      ) : null}
+
       <header className="mb-12 text-center">
         <motion.div
           initial={{ scale: 0.9, opacity: 0 }}

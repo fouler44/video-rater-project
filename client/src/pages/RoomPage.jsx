@@ -1,29 +1,106 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { apiDelete, apiPost } from "../lib/api";
+import { APP_ENV } from "../lib/env";
 import { getDefaultAvatar, getIdentity } from "../lib/identity";
 import { supabase } from "../lib/supabase";
-import { 
-  Users, 
-  Play, 
-  SkipForward, 
-  Trophy, 
-  Settings, 
-  Star, 
+import {
+  Users,
+  Play,
+  SkipForward,
+  Trophy,
+  Settings,
+  Star,
   CheckCircle2,
-  ChevronLeft, 
-  RefreshCw 
+  AlertTriangle,
+  X,
+  ChevronLeft,
+  RefreshCw,
 } from "lucide-react";
 
-const PARTYKIT_URL = import.meta.env.VITE_PARTYKIT_URL || "ws://localhost:1999";
+const PARTYKIT_URL = APP_ENV.partykitUrl;
+const OPENING_GRACE_MS = 2500;
+const DRIFT_THRESHOLD_SECONDS = 3;
+const HOST_SYNC_INTERVAL_MS = 12000;
+
+let youtubeIframePromise = null;
+
+function ensureYoutubeIframeApi() {
+  if (window.YT?.Player) return Promise.resolve(window.YT);
+  if (youtubeIframePromise) return youtubeIframePromise;
+
+  youtubeIframePromise = new Promise((resolve, reject) => {
+    const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+    if (!existingScript) {
+      const script = document.createElement("script");
+      script.src = "https://www.youtube.com/iframe_api";
+      script.async = true;
+      script.onerror = () => reject(new Error("Could not load YouTube iframe API"));
+      document.head.appendChild(script);
+    }
+
+    const previousReady = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      if (typeof previousReady === "function") previousReady();
+      resolve(window.YT);
+    };
+
+    const maxWaitMs = 15000;
+    const startedAt = Date.now();
+    const poll = () => {
+      if (window.YT?.Player) {
+        resolve(window.YT);
+        return;
+      }
+      if (Date.now() - startedAt > maxWaitMs) {
+        reject(new Error("Timed out waiting for YouTube iframe API"));
+        return;
+      }
+      window.setTimeout(poll, 120);
+    };
+
+    poll();
+  });
+
+  return youtubeIframePromise;
+}
 
 function normalizeParticipantRow(row) {
+  const name = row.user_name || row.display_name || "Anon";
   return {
     id: row.id || `${row.room_id || "room"}:${row.user_uuid}`,
     user_uuid: row.user_uuid,
-    user_name: row.user_name || row.display_name || "Anon",
-    avatar_url: row.avatar_url || getDefaultAvatar(row.user_name || row.display_name || "Anon"),
+    user_name: name,
+    avatar_url: row.avatar_url || getDefaultAvatar(name),
   };
+}
+
+function buildPartySocketUrl(roomId, identity) {
+  const normalizedBase = String(PARTYKIT_URL)
+    .replace(/^http:/i, "ws:")
+    .replace(/^https:/i, "wss:")
+    .replace(/\/$/, "");
+
+  const query = new URLSearchParams({
+    sessionToken: identity.token,
+  });
+
+  return `${normalizedBase}/parties/main/${roomId}?${query.toString()}`;
+}
+
+function upsertVote(votes, nextVote) {
+  const found = votes.some((item) => item.user_uuid === nextVote.user_uuid);
+  if (!found) {
+    return [...votes, { user_uuid: nextVote.user_uuid, score: nextVote.score }];
+  }
+
+  return votes.map((item) => {
+    if (item.user_uuid !== nextVote.user_uuid) return item;
+    return {
+      ...item,
+      score: nextVote.score,
+    };
+  });
 }
 
 export default function RoomPage() {
@@ -34,33 +111,139 @@ export default function RoomPage() {
   const [room, setRoom] = useState(null);
   const [openings, setOpenings] = useState([]);
   const [participants, setParticipants] = useState([]);
+  const [partyMembers, setPartyMembers] = useState([]);
+  const [connectedUserUuids, setConnectedUserUuids] = useState([]);
+
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [partyConnected, setPartyConnected] = useState(false);
+  const [partyError, setPartyError] = useState("");
+
   const [myRating, setMyRating] = useState(0);
-  const [isOwner, setIsOwner] = useState(false);
   const [currentOpeningVotes, setCurrentOpeningVotes] = useState([]);
+  const [hostUuid, setHostUuid] = useState("");
+
+  const [graceUntilTs, setGraceUntilTs] = useState(0);
+  const [tickNow, setTickNow] = useState(Date.now());
+
+  const [playerReady, setPlayerReady] = useState(false);
+  const [playerIsPlaying, setPlayerIsPlaying] = useState(false);
+  const [playerError, setPlayerError] = useState("");
+  const [uiNotice, setUiNotice] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState({
+    open: false,
+    title: "",
+    message: "",
+    confirmLabel: "Confirm",
+    danger: false,
+  });
+
+  const wsRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const pendingSkipRef = useRef(null);
+  const reconnectAttemptRef = useRef(0);
+
+  const roomRef = useRef(room);
+  const currentOpeningRef = useRef(null);
+  const isHostRef = useRef(false);
+  const playerReadyRef = useRef(false);
+  const lastIncomingPlayerStateRef = useRef(null);
+
+  const playerRef = useRef(null);
+  const playerContainerRef = useRef(null);
+  const confirmResolverRef = useRef(null);
+  const nativeControlsRef = useRef(false);
+
+  // Guard against host replay loops: state changes caused by remote sync should not be re-broadcast.
+  const remotePlayerMutationUntilRef = useRef(0);
+
+  useEffect(() => {
+    roomRef.current = room;
+  }, [room]);
+
+  const mergedParticipants = useMemo(() => {
+    const map = new Map();
+
+    for (const participant of participants) {
+      map.set(participant.user_uuid, participant);
+    }
+
+    for (const partyMember of partyMembers) {
+      const userUuid = String(partyMember.userUuid || "").trim();
+      if (!userUuid) continue;
+
+      const existing = map.get(userUuid);
+      const displayName = String(partyMember.displayName || existing?.user_name || "Anon").trim() || "Anon";
+      const avatar = String(partyMember.avatarUrl || existing?.avatar_url || "").trim();
+
+      map.set(userUuid, {
+        id: existing?.id || `${roomId}:${userUuid}`,
+        user_uuid: userUuid,
+        user_name: displayName,
+        avatar_url: avatar || getDefaultAvatar(displayName),
+      });
+    }
+
+    return Array.from(map.values());
+  }, [participants, partyMembers, roomId]);
 
   const currentOpening = useMemo(() => {
     if (!room || !openings.length) return null;
-    return openings.find((o) => o.order_index === room.current_opening_index);
+    return openings.find((item) => item.order_index === room.current_opening_index) || null;
   }, [room, openings]);
 
-  const participantByUuid = useMemo(
-    () => Object.fromEntries(participants.map((item) => [item.user_uuid, item])),
-    [participants],
-  );
+  useEffect(() => {
+    currentOpeningRef.current = currentOpening;
+  }, [currentOpening]);
 
-  const votedUserSet = useMemo(() => new Set(currentOpeningVotes.map((row) => row.user_uuid)), [currentOpeningVotes]);
+  const isHost = Boolean(identity?.userId && hostUuid && identity.userId === hostUuid);
+
+  useEffect(() => {
+    isHostRef.current = isHost;
+  }, [isHost]);
+
+  useEffect(() => {
+    playerReadyRef.current = playerReady;
+  }, [playerReady]);
+
+  const votedUserSet = useMemo(
+    () => new Set(currentOpeningVotes.map((row) => row.user_uuid)),
+    [currentOpeningVotes],
+  );
 
   const userScoreMap = useMemo(
     () => Object.fromEntries(currentOpeningVotes.map((row) => [row.user_uuid, row.score])),
     [currentOpeningVotes],
   );
 
-  const allParticipantsVoted = useMemo(
-    () => participants.length > 0 && participants.every((p) => votedUserSet.has(p.user_uuid)),
-    [participants, votedUserSet],
+  const activeUserSet = useMemo(() => new Set(connectedUserUuids), [connectedUserUuids]);
+
+  const connectedParticipants = useMemo(
+    () => mergedParticipants.filter((participant) => activeUserSet.has(participant.user_uuid)),
+    [mergedParticipants, activeUserSet],
   );
+
+  const ratedConnectedCount = useMemo(
+    () => connectedParticipants.filter((participant) => votedUserSet.has(participant.user_uuid)).length,
+    [connectedParticipants, votedUserSet],
+  );
+
+  const connectedUnratedParticipants = useMemo(
+    () => connectedParticipants.filter((participant) => !votedUserSet.has(participant.user_uuid)),
+    [connectedParticipants, votedUserSet],
+  );
+
+  const connectedCount = connectedParticipants.length;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setTickNow(Date.now());
+    }, 200);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!identity) {
@@ -68,7 +251,9 @@ export default function RoomPage() {
       return;
     }
 
-    async function load() {
+    let disposed = false;
+
+    async function loadRoom() {
       setLoading(true);
       try {
         const { data: roomData, error: roomError } = await supabase
@@ -78,12 +263,16 @@ export default function RoomPage() {
           .single();
 
         if (roomError) throw roomError;
-        setRoom(roomData);
-        setIsOwner(
-          roomData.owner_user_id === identity.userId ||
-          roomData.host_uuid === identity.userId ||
-          identity.role === "admin",
-        );
+
+        if (!disposed) {
+          setRoom(roomData);
+          setHostUuid(roomData.host_uuid || "");
+        }
+
+        if (roomData.status === "finished") {
+          navigate(`/room/${roomId}/rankings`, { replace: true });
+          return;
+        }
 
         const { data: openingsData, error: openingsError } = await supabase
           .from("list_openings")
@@ -92,28 +281,26 @@ export default function RoomPage() {
           .order("order_index", { ascending: true });
 
         if (openingsError) throw openingsError;
-        setOpenings(openingsData || []);
+
+        if (!disposed) {
+          setOpenings(openingsData || []);
+        }
 
         await upsertMyPresence();
-
-        const { data: ratingData } = await supabase
-          .from("ratings")
-          .select("score")
-          .eq("room_id", roomId)
-          .eq("user_uuid", identity.userId)
-          .eq("list_opening_id", openingsData.find((o) => o.order_index === roomData.current_opening_index)?.id)
-          .maybeSingle();
-
-        if (ratingData) setMyRating(ratingData.score);
-      } catch (err) {
-        alert(err.message);
-        navigate("/");
+        await fetchParticipants();
+      } catch (error) {
+        if (!disposed) {
+          showNotice(error.message || "Could not load room", "error");
+          navigate("/");
+        }
       } finally {
-        setLoading(false);
+        if (!disposed) {
+          setLoading(false);
+        }
       }
     }
 
-    load();
+    loadRoom();
 
     const roomSub = supabase
       .channel(`room:${roomId}`)
@@ -121,9 +308,14 @@ export default function RoomPage() {
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
         (payload) => {
-          setRoom(payload.new);
-          setMyRating(0);
-        }
+          const nextRoom = payload.new;
+          setRoom((prev) => ({ ...(prev || {}), ...nextRoom }));
+          setHostUuid(String(nextRoom.host_uuid || ""));
+
+          if (nextRoom.status === "finished") {
+            navigate(`/room/${roomId}/rankings`, { replace: true });
+          }
+        },
       )
       .subscribe();
 
@@ -132,47 +324,587 @@ export default function RoomPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${roomId}` },
-        () => fetchParticipants()
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "room_participants", filter: `room_id=eq.${roomId}` },
-        () => fetchParticipants()
+        () => fetchParticipants(),
       )
       .subscribe();
 
-    fetchParticipants();
+    const ratingSub = supabase
+      .channel(`ratings:${roomId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "ratings", filter: `room_id=eq.${roomId}` },
+        () => fetchCurrentOpeningVotes(),
+      )
+      .subscribe();
 
     return () => {
+      disposed = true;
       supabase.removeChannel(roomSub);
       supabase.removeChannel(participantSub);
+      supabase.removeChannel(ratingSub);
     };
-  }, [roomId]);
+  }, [roomId, navigate]);
 
   useEffect(() => {
-    async function fetchCurrentOpeningVotes() {
-      if (!currentOpening?.id) {
-        setCurrentOpeningVotes([]);
-        return;
-      }
-
-      const { data, error } = await supabase
-        .from("ratings")
-        .select("user_uuid,score")
-        .eq("room_id", roomId)
-        .eq("list_opening_id", currentOpening.id);
-
-      if (!error) {
-        setCurrentOpeningVotes(data || []);
-      }
-    }
-
     fetchCurrentOpeningVotes();
   }, [roomId, currentOpening?.id]);
 
   useEffect(() => {
-    setMyRating(0);
-  }, [currentOpening?.id]);
+    if (!identity || !currentOpening?.id) {
+      setMyRating(0);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function hydrateMyRating() {
+      const { data } = await supabase
+        .from("ratings")
+        .select("score")
+        .eq("room_id", roomId)
+        .eq("user_uuid", identity.userId)
+        .eq("list_opening_id", currentOpening.id)
+        .maybeSingle();
+
+      if (!cancelled) {
+        setMyRating(data?.score || 0);
+      }
+    }
+
+    hydrateMyRating();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId, currentOpening?.id, identity?.userId]);
+
+  useEffect(() => {
+    if (!identity) return;
+
+    let closedByEffect = false;
+
+    function connect() {
+      if (closedByEffect) return;
+
+      const existingSocket = wsRef.current;
+      if (
+        existingSocket
+        && (
+          existingSocket.readyState === WebSocket.OPEN
+          || existingSocket.readyState === WebSocket.CONNECTING
+        )
+      ) {
+        return;
+      }
+
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+
+      try {
+        const ws = new WebSocket(buildPartySocketUrl(roomId, identity));
+        reconnectAttemptRef.current += 1;
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (closedByEffect) return;
+
+          reconnectAttemptRef.current = 0;
+          if (reconnectTimerRef.current) {
+            window.clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+          }
+
+          setPartyConnected(true);
+          setPartyError("");
+          sendPartyEvent("room:request-state", {});
+        };
+
+        ws.onmessage = (event) => {
+          if (closedByEffect) return;
+
+          let envelope;
+          try {
+            envelope = JSON.parse(String(event.data || "{}"));
+          } catch {
+            return;
+          }
+
+          handlePartyEvent(envelope);
+        };
+
+        ws.onclose = () => {
+          if (wsRef.current === ws) {
+            wsRef.current = null;
+          }
+
+          setPartyConnected(false);
+
+          if (!closedByEffect) {
+            if (!reconnectTimerRef.current) {
+              const retryMs = Math.min(4000, 1200 + reconnectAttemptRef.current * 250);
+              reconnectTimerRef.current = window.setTimeout(() => {
+                reconnectTimerRef.current = null;
+                connect();
+              }, retryMs);
+            }
+          }
+        };
+
+        ws.onerror = () => {
+          setPartyError("Realtime sync degraded. Reconnecting...");
+        };
+      } catch {
+        setPartyError("Realtime sync unavailable. Retrying...");
+
+        if (!reconnectTimerRef.current) {
+          const retryMs = Math.min(4500, 1800 + reconnectAttemptRef.current * 300);
+          reconnectTimerRef.current = window.setTimeout(() => {
+            reconnectTimerRef.current = null;
+            connect();
+          }, retryMs);
+        }
+      }
+    }
+
+    connect();
+
+    return () => {
+      closedByEffect = true;
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      wsRef.current = null;
+    };
+  }, [roomId, identity?.token]);
+
+  useEffect(() => {
+    if (room?.status !== "playing" || !currentOpening?.youtube_video_id) {
+      setPlayerReady(false);
+      setPlayerIsPlaying(false);
+
+      if (playerRef.current) {
+        playerRef.current.destroy();
+        playerRef.current = null;
+      }
+
+      return;
+    }
+
+    let cancelled = false;
+
+    async function mountPlayer() {
+      try {
+        await ensureYoutubeIframeApi();
+        if (cancelled || !playerContainerRef.current) return;
+
+        const videoId = currentOpening.youtube_video_id;
+        const shouldUseNativeControls = isHost;
+        const shouldRecreatePlayer =
+          !playerRef.current || nativeControlsRef.current !== shouldUseNativeControls;
+
+        if (shouldRecreatePlayer) {
+          if (playerRef.current) {
+            playerRef.current.destroy();
+            playerRef.current = null;
+          }
+
+          nativeControlsRef.current = shouldUseNativeControls;
+          playerRef.current = new window.YT.Player(playerContainerRef.current, {
+            videoId,
+            playerVars: {
+              autoplay: 0,
+              controls: shouldUseNativeControls ? 1 : 0,
+              disablekb: shouldUseNativeControls ? 0 : 1,
+              modestbranding: 1,
+              rel: 0,
+              playsinline: 1,
+              origin: window.location.origin,
+            },
+            events: {
+              onReady: () => {
+                setPlayerReady(true);
+                setPlayerIsPlaying(false);
+                setPlayerError("");
+
+                if (lastIncomingPlayerStateRef.current) {
+                  applyRemotePlayerState(lastIncomingPlayerStateRef.current, false);
+                }
+              },
+              onStateChange: (event) => {
+                const ytState = Number(event.data);
+                const PLAYING = Number(window.YT?.PlayerState?.PLAYING);
+                const PAUSED = Number(window.YT?.PlayerState?.PAUSED);
+                const ENDED = Number(window.YT?.PlayerState?.ENDED);
+                const CUED = Number(window.YT?.PlayerState?.CUED);
+
+                if (ytState === CUED || ytState === PLAYING || ytState === PAUSED) {
+                  setPlayerReady(true);
+                }
+
+                if (ytState === PLAYING) setPlayerIsPlaying(true);
+                if (ytState === PAUSED || ytState === ENDED) setPlayerIsPlaying(false);
+
+                if (!isHostRef.current) return;
+                if (Date.now() < remotePlayerMutationUntilRef.current) return;
+
+                if (ytState === PLAYING) {
+                  publishHostPlayerState("host-playing", true);
+                }
+
+                if (ytState === PAUSED || ytState === ENDED) {
+                  publishHostPlayerState("host-paused", false);
+                }
+              },
+            },
+          });
+
+          return;
+        }
+
+        setPlayerReady(false);
+        setPlayerIsPlaying(false);
+        remotePlayerMutationUntilRef.current = Date.now() + 500;
+        playerRef.current.loadVideoById(videoId, 0);
+        playerRef.current.pauseVideo();
+      } catch (error) {
+        setPlayerError(error.message || "Could not initialize YouTube player");
+      }
+    }
+
+    mountPlayer();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [room?.status, currentOpening?.youtube_video_id, isHost]);
+
+  useEffect(() => {
+    return () => {
+      if (playerRef.current) {
+        playerRef.current.destroy();
+        playerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isHost || room?.status !== "playing") return;
+
+    const interval = window.setInterval(() => {
+      publishHostDriftSync();
+    }, HOST_SYNC_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [isHost, room?.status, currentOpening?.youtube_video_id]);
+
+  useEffect(() => {
+    if (!uiNotice) return;
+
+    const timeout = window.setTimeout(() => {
+      setUiNotice(null);
+    }, 4200);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [uiNotice]);
+
+  function sendPartyEvent(type, payload) {
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+    socket.send(
+      JSON.stringify({
+        type,
+        payload,
+      }),
+    );
+  }
+
+  function handlePartyEvent(envelope) {
+    const type = String(envelope?.type || "");
+    const payload = envelope?.payload || {};
+
+    if (!type) return;
+
+    if (type === "presence:update") {
+      setHostUuid(String(payload.hostUuid || ""));
+      setPartyMembers(Array.isArray(payload.members) ? payload.members : []);
+
+      const connected = Array.isArray(payload.connectedUserUuids)
+        ? payload.connectedUserUuids
+        : (payload.members || []).filter((member) => member.active).map((member) => member.userUuid);
+
+      setConnectedUserUuids(connected);
+      return;
+    }
+
+    if (type === "room:state") {
+      const roomPatch = payload.room || {};
+      const nextStatus = String(roomPatch.status || "");
+      const nextIndex = Number(roomPatch.currentOpeningIndex);
+
+      if (nextStatus === "finished") {
+        navigate(`/room/${roomId}/rankings`, { replace: true });
+        return;
+      }
+
+      setRoom((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          status: nextStatus || prev.status,
+          current_opening_index: Number.isInteger(nextIndex)
+            ? nextIndex
+            : prev.current_opening_index,
+          host_uuid: String(payload.hostUuid || prev.host_uuid || ""),
+        };
+      });
+
+      if (payload.hostUuid) {
+        setHostUuid(String(payload.hostUuid));
+      }
+
+      if (Array.isArray(payload.members)) {
+        setPartyMembers(payload.members);
+      }
+
+      if (Array.isArray(payload.connectedUserUuids)) {
+        setConnectedUserUuids(payload.connectedUserUuids);
+      }
+
+      if (payload.playerState) {
+        lastIncomingPlayerStateRef.current = payload.playerState;
+        applyRemotePlayerState(payload.playerState, false);
+      }
+
+      return;
+    }
+
+    if (type === "host:changed") {
+      const nextHost = String(payload.hostUuid || "");
+      setHostUuid(nextHost);
+      setRoom((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          host_uuid: nextHost || prev.host_uuid,
+        };
+      });
+      return;
+    }
+
+    if (type === "player:snapshot:request") {
+      if (isHostRef.current) {
+        publishHostPlayerState("snapshot-request");
+      }
+      return;
+    }
+
+    if (type === "player:state") {
+      lastIncomingPlayerStateRef.current = payload;
+
+      if (isHostRef.current && payload.sourceUserUuid === identity?.userId) {
+        return;
+      }
+
+      applyRemotePlayerState(payload, false);
+      return;
+    }
+
+    if (type === "player:sync") {
+      if (isHostRef.current && payload.sourceUserUuid === identity?.userId) {
+        return;
+      }
+
+      applyRemotePlayerState(payload, true);
+      return;
+    }
+
+    if (type === "rating:submitted") {
+      if (!currentOpeningRef.current?.id) return;
+      if (String(payload.openingId || "") !== String(currentOpeningRef.current.id)) return;
+
+      const userUuid = String(payload.userUuid || "").trim();
+      const score = Number(payload.score);
+
+      if (!userUuid || !Number.isInteger(score)) return;
+
+      setCurrentOpeningVotes((prev) => upsertVote(prev, { user_uuid: userUuid, score }));
+      return;
+    }
+
+    if (type === "opening:skip:confirm-required") {
+      if (!isHostRef.current) return;
+
+      const pending = pendingSkipRef.current;
+      if (!pending) return;
+
+      const pendingCount = Number(payload.pendingCount || 0);
+      openConfirmDialog({
+        title: "Skip opening?",
+        message: `${pendingCount} users haven't rated yet. Do you want to continue anyway?`,
+        confirmLabel: "Skip anyway",
+        danger: true,
+      }).then((confirmed) => {
+        if (!confirmed) {
+          setActionLoading(false);
+          return;
+        }
+
+        sendPartyEvent("opening:next", {
+          ...pending,
+          force: true,
+        });
+      });
+      return;
+    }
+
+    if (type === "opening:next") {
+      setActionLoading(false);
+
+      const nextIndex = Number(payload.nextOpeningIndex);
+      const nextStatus = String(payload.status || "");
+      const graceMs = Number(payload.graceMs || OPENING_GRACE_MS);
+
+      if (nextStatus === "finished") {
+        navigate(`/room/${roomId}/rankings`, { replace: true });
+        return;
+      }
+
+      setRoom((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          status: nextStatus || prev.status,
+          current_opening_index: Number.isInteger(nextIndex)
+            ? nextIndex
+            : prev.current_opening_index,
+        };
+      });
+
+      setMyRating(0);
+      setGraceUntilTs(Date.now() + Math.max(2000, Math.min(3500, graceMs)));
+      setPlayerIsPlaying(false);
+
+      const nextVideoId = String(payload.videoId || "").trim();
+      if (playerRef.current && nextVideoId) {
+        setPlayerReady(false);
+        remotePlayerMutationUntilRef.current = Date.now() + 500;
+        playerRef.current.loadVideoById(nextVideoId, 0);
+        playerRef.current.pauseVideo();
+      }
+
+      return;
+    }
+
+    if (type === "opening:next:error") {
+      setActionLoading(false);
+      showNotice(String(payload.message || "Could not advance opening"), "error");
+      return;
+    }
+
+    if (type === "room:finished") {
+      navigate(`/room/${roomId}/rankings`, { replace: true });
+    }
+  }
+
+  function applyRemotePlayerState(snapshot, driftOnly) {
+    const player = playerRef.current;
+    if (!player || !playerReadyRef.current) return;
+
+    const roomOpeningIndex = Number(roomRef.current?.current_opening_index || 0);
+    const snapshotOpeningIndex = Number(snapshot?.openingIndex);
+
+    if (Number.isInteger(snapshotOpeningIndex) && snapshotOpeningIndex !== roomOpeningIndex) {
+      return;
+    }
+
+    const snapshotVideoId = String(snapshot?.videoId || "").trim();
+    const expectedVideoId = String(currentOpeningRef.current?.youtube_video_id || "").trim();
+    const targetTimestamp = Math.max(0, Number(snapshot?.timestamp || 0));
+
+    if (snapshotVideoId && snapshotVideoId !== expectedVideoId) {
+      remotePlayerMutationUntilRef.current = Date.now() + 600;
+      setPlayerReady(false);
+      player.loadVideoById(snapshotVideoId, targetTimestamp);
+      player.pauseVideo();
+      return;
+    }
+
+    const currentTimestamp = Number(player.getCurrentTime?.() || 0);
+    const driftSeconds = Math.abs(currentTimestamp - targetTimestamp);
+
+    // Small jitter is tolerated; hard seek only when drift becomes noticeable.
+    if (driftSeconds > DRIFT_THRESHOLD_SECONDS) {
+      remotePlayerMutationUntilRef.current = Date.now() + 500;
+      player.seekTo(targetTimestamp, true);
+    }
+
+    if (driftOnly) {
+      return;
+    }
+
+    const PLAYING = Number(window.YT?.PlayerState?.PLAYING);
+    const currentState = Number(player.getPlayerState?.());
+    const shouldPlay = Boolean(snapshot?.isPlaying);
+
+    if (shouldPlay && currentState !== PLAYING) {
+      remotePlayerMutationUntilRef.current = Date.now() + 500;
+      player.playVideo();
+    }
+
+    if (!shouldPlay && currentState === PLAYING) {
+      remotePlayerMutationUntilRef.current = Date.now() + 500;
+      player.pauseVideo();
+    }
+
+    setPlayerIsPlaying(shouldPlay);
+  }
+
+  function publishHostPlayerState(reason, isPlayingOverride) {
+    if (!isHostRef.current) return;
+
+    const player = playerRef.current;
+    if (!player || !currentOpeningRef.current) return;
+
+    const currentTime = Number(player.getCurrentTime?.() || 0);
+    const ytPlaying = Number(window.YT?.PlayerState?.PLAYING);
+    const measuredIsPlaying = Number(player.getPlayerState?.()) === ytPlaying;
+
+    sendPartyEvent("player:state", {
+      openingIndex: Number(roomRef.current?.current_opening_index || 0),
+      videoId: String(currentOpeningRef.current.youtube_video_id || ""),
+      timestamp: Math.max(0, currentTime),
+      isPlaying: typeof isPlayingOverride === "boolean" ? isPlayingOverride : measuredIsPlaying,
+      reason,
+    });
+  }
+
+  function publishHostDriftSync() {
+    if (!isHostRef.current || roomRef.current?.status !== "playing") return;
+
+    const player = playerRef.current;
+    if (!player || !playerReadyRef.current || !currentOpeningRef.current) return;
+
+    const ytPlaying = Number(window.YT?.PlayerState?.PLAYING);
+
+    sendPartyEvent("player:sync", {
+      openingIndex: Number(roomRef.current?.current_opening_index || 0),
+      videoId: String(currentOpeningRef.current.youtube_video_id || ""),
+      timestamp: Math.max(0, Number(player.getCurrentTime?.() || 0)),
+      isPlaying: Number(player.getPlayerState?.()) === ytPlaying,
+      reason: "periodic-sync",
+    });
+  }
 
   async function fetchParticipants() {
     const membersResult = await supabase
@@ -185,139 +917,248 @@ export default function RoomPage() {
       return;
     }
 
-    const legacyResult = await supabase
-      .from("room_participants")
-      .select("*")
-      .eq("room_id", roomId);
-
-    if (!legacyResult.error && legacyResult.data) {
-      setParticipants(legacyResult.data.map(normalizeParticipantRow));
-      return;
-    }
-
     setParticipants([]);
   }
 
-  function hasVoted(userUuid) {
-    return votedUserSet.has(userUuid);
+  async function fetchCurrentOpeningVotes() {
+    if (!currentOpeningRef.current?.id) {
+      setCurrentOpeningVotes([]);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("ratings")
+      .select("user_uuid,score")
+      .eq("room_id", roomId)
+      .eq("list_opening_id", currentOpeningRef.current.id);
+
+    if (!error) {
+      setCurrentOpeningVotes(data || []);
+    }
   }
 
   async function upsertMyPresence() {
     if (!identity) return;
-
-    const payload = {
-      room_id: roomId,
-      user_uuid: identity.userId,
-      user_id: identity.userId,
-      display_name: identity.displayName,
-      avatar_url: identity.avatarUrl || getDefaultAvatar(identity.displayName),
-    };
-
-    const { error } = await supabase.from("room_members").upsert(payload);
-    if (!error) return;
-
-    await supabase.from("room_participants").upsert({
-      room_id: roomId,
-      user_uuid: identity.userId,
-      user_name: identity.displayName,
-      avatar_url: identity.avatarUrl || getDefaultAvatar(identity.displayName),
-    });
+    await apiPost(`/api/rooms/${roomId}/presence`, {});
   }
 
   async function handleRate(score) {
-    if (!currentOpening || !identity) return;
+    if (!currentOpening || !identity || room?.status !== "playing") return;
+
+    const previous = myRating;
     setMyRating(score);
-    await apiPost("/api/rooms/rate", {
-      roomId,
-      openingId: currentOpening.id,
-      score,
-    });
+
+    try {
+      await apiPost("/api/rooms/rate", {
+        roomId,
+        openingId: currentOpening.id,
+        score,
+      });
+
+      setCurrentOpeningVotes((prev) => upsertVote(prev, { user_uuid: identity.userId, score }));
+      sendPartyEvent("rating:submitted", {
+        openingId: currentOpening.id,
+        score,
+      });
+    } catch (error) {
+      setMyRating(previous);
+      showNotice(error.message || "Could not submit rating", "error");
+      await fetchCurrentOpeningVotes();
+    }
   }
 
   async function handleStartRoom() {
-    if (!isOwner) return;
+    if (!isHost) return;
+
     setActionLoading(true);
     try {
       const data = await apiPost("/api/rooms/status", { roomId, status: "playing" });
-      setRoom(data.room);
-    } catch (err) {
-      alert("Error starting session: " + (err.message || "Unknown error"));
+      setRoom((prev) => ({ ...(prev || {}), ...(data.room || {}) }));
+      setGraceUntilTs(Date.now() + OPENING_GRACE_MS);
+      setPlayerIsPlaying(false);
+
+      publishHostPlayerState("room-start", false);
+    } catch (error) {
+      showNotice(error.message || "Could not start room", "error");
     } finally {
       setActionLoading(false);
     }
+  }
+
+  function sendOpeningAdvance(targetIndex, finish = false, force = false) {
+    const request = {
+      targetIndex,
+      finish,
+      force,
+      graceMs: OPENING_GRACE_MS,
+    };
+
+    pendingSkipRef.current = request;
+    setActionLoading(true);
+    sendPartyEvent("opening:next", request);
   }
 
   async function handleNext() {
-    if (!isOwner || !room) return;
-    if (room.current_opening_index >= openings.length - 1) {
-      await apiPost("/api/rooms/status", { roomId, status: "finished" });
-      navigate(`/rankings/${roomId}`);
-    } else {
-      await apiPost(`/api/rooms/${roomId}/advance`, {
-        nextIndex: room.current_opening_index + 1,
+    if (!isHost || !room || openings.length === 0) return;
+
+    const isLast = room.current_opening_index >= openings.length - 1;
+    const unratedCount = connectedUnratedParticipants.length;
+
+    if (unratedCount > 0) {
+      const confirmed = await openConfirmDialog({
+        title: "Skip opening?",
+        message: `${unratedCount} users haven't rated yet. Do you want to continue anyway?`,
+        confirmLabel: "Skip anyway",
+        danger: true,
       });
+      if (!confirmed) return;
+      sendOpeningAdvance(room.current_opening_index + 1, isLast, true);
+      return;
     }
+
+    sendOpeningAdvance(room.current_opening_index + 1, isLast, true);
   }
 
   async function handleSelectOpening(index) {
-    if (!isOwner || !room) return;
+    if (!isHost || !room) return;
 
     const safeIndex = Math.max(0, Math.min(openings.length - 1, Number(index)));
-    setActionLoading(true);
-    try {
-      const data = await apiPost(`/api/rooms/${roomId}/opening`, {
-        openingIndex: safeIndex,
+    if (!Number.isInteger(safeIndex)) return;
+    if (safeIndex === room.current_opening_index) return;
+
+    let force = true;
+
+    if (connectedUnratedParticipants.length > 0) {
+      const confirmed = await openConfirmDialog({
+        title: "Jump to another opening?",
+        message: `${connectedUnratedParticipants.length} users haven't rated yet. Do you want to jump anyway?`,
+        confirmLabel: "Jump anyway",
+        danger: true,
       });
-      setRoom(data.room);
-    } catch (err) {
-      alert("Error jumping to opening: " + (err.message || "Unknown error"));
-    } finally {
-      setActionLoading(false);
+      if (!confirmed) return;
+      force = true;
     }
+
+    sendOpeningAdvance(safeIndex, false, force);
   }
 
   async function handleDeleteRoom() {
-    if (!isOwner) return;
-    const confirmed = window.confirm("Delete this room? This action cannot be undone.");
+    if (!isHost && room?.owner_user_id !== identity?.userId && identity?.role !== "admin") return;
+
+    const confirmed = await openConfirmDialog({
+      title: "Delete room?",
+      message: "This action cannot be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
     if (!confirmed) return;
 
     try {
       await apiDelete(`/api/rooms/${roomId}`);
       navigate("/");
     } catch (error) {
-      alert(error.message || "Could not delete room");
+      showNotice(error.message || "Could not delete room", "error");
     }
   }
 
   function goPrev() {
-    if (!isOwner || !room || room.current_opening_index <= 0) return;
+    if (!isHost || !room || room.current_opening_index <= 0) return;
     handleSelectOpening(room.current_opening_index - 1);
   }
 
-  if (loading) return <div className="flex items-center justify-center min-h-screen"><RefreshCw className="animate-spin text-brand-500" /></div>;
+  function hasVoted(userUuid) {
+    return votedUserSet.has(userUuid);
+  }
+
+  function showNotice(message, tone = "error") {
+    setUiNotice({
+      id: Date.now(),
+      message: String(message || "Unexpected error"),
+      tone,
+    });
+  }
+
+  function openConfirmDialog({ title, message, confirmLabel = "Confirm", danger = false }) {
+    return new Promise((resolve) => {
+      confirmResolverRef.current = resolve;
+      setConfirmDialog({
+        open: true,
+        title,
+        message,
+        confirmLabel,
+        danger,
+      });
+    });
+  }
+
+  function closeConfirmDialog(confirmed) {
+    if (typeof confirmResolverRef.current === "function") {
+      confirmResolverRef.current(Boolean(confirmed));
+    }
+
+    confirmResolverRef.current = null;
+    setConfirmDialog((prev) => ({ ...prev, open: false }));
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <RefreshCw className="animate-spin text-brand-500" />
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8 h-[calc(100vh-2rem)] flex flex-col">
-      {/* Header */}
-      <header className="flex items-center justify-between mb-8 shrink-0">
-        <div className="flex items-center gap-4">
-          <Link to="/" className="p-2 hover:bg-slate-800 rounded-lg transition-colors">
+    <>
+      <div className="max-w-[1700px] mx-auto px-3 md:px-4 py-6 md:py-8 h-[calc(100vh-1.5rem)] flex flex-col">
+      {uiNotice ? (
+        <div
+          className={`mb-4 text-sm px-4 py-3 rounded-xl border flex items-start gap-3 animate-fade-in ${
+            uiNotice.tone === "warning"
+              ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
+              : "border-rose-500/40 bg-rose-500/10 text-rose-100"
+          }`}
+          role="alert"
+        >
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span className="flex-1">{uiNotice.message}</span>
+          <button
+            type="button"
+            className="p-1 rounded-md hover:bg-black/20 transition-colors"
+            onClick={() => setUiNotice(null)}
+            aria-label="Close notice"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      ) : null}
+
+      <header className="flex items-center justify-between mb-8 shrink-0 gap-4">
+        <div className="flex items-center gap-4 min-w-0">
+          <Link to="/" className="p-2 hover:bg-slate-800 rounded-lg transition-colors shrink-0">
             <ChevronLeft className="w-6 h-6" />
           </Link>
-          <div>
-            <h1 className="text-2xl font-black">{room?.name}</h1>
+          <div className="min-w-0">
+            <h1 className="text-2xl font-black truncate">{room?.name}</h1>
             <p className="text-xs text-slate-500 flex items-center gap-2 uppercase tracking-widest">
               <Star className="w-3 h-3 text-brand-400" />
               {room?.lists?.name}
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-full text-xs font-bold text-slate-400">
+
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-full text-xs font-bold text-slate-300">
             <Users className="w-3 h-3" />
-            {participants.length} Active
+            {ratedConnectedCount}/{connectedCount} rated
           </div>
-          {isOwner && (
+
+          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-full text-xs font-bold text-slate-400">
+            <span className={`w-2 h-2 rounded-full ${partyConnected ? "bg-emerald-400" : "bg-slate-500"}`} />
+            {partyConnected ? "Realtime" : "Reconnecting"}
+          </div>
+
+          {(isHost || room?.owner_user_id === identity?.userId || identity?.role === "admin") && (
             <button
               className="p-2 hover:bg-slate-800 rounded-lg transition-colors"
               title="Delete room"
@@ -329,9 +1170,14 @@ export default function RoomPage() {
         </div>
       </header>
 
+      {partyError ? (
+        <div className="mb-4 text-xs px-3 py-2 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-200">
+          {partyError}
+        </div>
+      ) : null}
+
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-8 min-h-0">
-        {/* Main Content: Video & Controls */}
-        <div className="lg:col-span-8 flex flex-col gap-6 min-h-0">
+        <div className="lg:col-span-9 flex flex-col gap-6 min-h-0">
           {room?.status === "playing" && currentOpening && (
             <div className="flex items-center justify-between px-4 py-2 bg-slate-900/40 border border-slate-800 rounded-2xl">
               <div>
@@ -343,7 +1189,8 @@ export default function RoomPage() {
               </div>
             </div>
           )}
-          <div className="relative aspect-video bg-black rounded-3xl overflow-hidden shadow-2xl border border-slate-800 group">
+
+          <div className="relative aspect-video lg:aspect-[16/10] xl:aspect-[16/9] bg-black rounded-3xl overflow-hidden shadow-2xl border border-slate-800 group min-h-[280px] md:min-h-[420px] lg:min-h-[520px]">
             {room?.status === "waiting" ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
                 <div className="w-20 h-20 bg-brand-500/20 rounded-full flex items-center justify-center mb-6 animate-pulse">
@@ -351,11 +1198,11 @@ export default function RoomPage() {
                 </div>
                 <h2 className="text-3xl font-black mb-2">Waiting to Start</h2>
                 <p className="text-slate-400 max-w-md mb-8">
-                  The room owner will start the session once everyone has joined.
+                  The host will start the session once everyone has joined.
                 </p>
-                {isOwner && (
-                  <button 
-                    className="btn-primary px-12 py-4 text-lg disabled:opacity-50 disabled:cursor-not-allowed" 
+                {isHost && (
+                  <button
+                    className="btn-primary px-12 py-4 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
                     onClick={handleStartRoom}
                     disabled={actionLoading}
                   >
@@ -368,7 +1215,7 @@ export default function RoomPage() {
                 <Trophy className="w-20 h-20 text-yellow-500 mb-6" />
                 <h2 className="text-3xl font-black mb-2">Session Finished!</h2>
                 <p className="text-slate-400 mb-8">All openings have been rated. Check out the final rankings.</p>
-                <Link to={`/rankings/${roomId}`} className="btn-primary px-12 py-4 text-lg">
+                <Link to={`/room/${roomId}/rankings`} className="btn-primary px-12 py-4 text-lg">
                   VIEW RANKINGS
                 </Link>
               </div>
@@ -379,24 +1226,20 @@ export default function RoomPage() {
                 <p className="text-slate-400 max-w-md mb-6">
                   This opening does not have an embeddable YouTube video yet.
                 </p>
-                <a
-                  className="btn-primary px-6 py-3"
-                  href={`https://www.youtube.com/watch?v=${currentOpening?.youtube_video_id || ""}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open on YouTube
-                </a>
               </div>
             ) : (
               <>
-                <iframe
-                  className="w-full h-full"
-                  src={`https://www.youtube.com/embed/${currentOpening.youtube_video_id}?autoplay=1&controls=1&modestbranding=1&rel=0`}
-                  title="YouTube video player"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                ></iframe>
+                <div ref={playerContainerRef} className="w-full h-full" />
+                {tickNow < graceUntilTs && (
+                  <div className="absolute top-3 right-3 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full bg-slate-900/90 border border-slate-700 text-amber-300">
+                    Loading sync...
+                  </div>
+                )}
+                {playerError ? (
+                  <div className="absolute bottom-3 left-3 right-3 text-xs px-3 py-2 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-100">
+                    {playerError}
+                  </div>
+                ) : null}
               </>
             )}
           </div>
@@ -405,7 +1248,7 @@ export default function RoomPage() {
             <div className="card p-6 flex flex-col md:flex-row items-center justify-between gap-8">
               <div className="flex-1 text-center md:text-left">
                 <h3 className="text-xs font-bold text-slate-500 uppercase tracking-[0.2em] mb-2">Rate this Opening</h3>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap justify-center md:justify-start">
                   {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
                     <button
                       key={num}
@@ -421,19 +1264,20 @@ export default function RoomPage() {
                   ))}
                 </div>
               </div>
-              
-              {isOwner && (
+
+              {isHost && (
                 <div className="flex items-center gap-2 whitespace-nowrap">
                   <button
-                    className="btn-secondary h-12 px-4 flex items-center gap-2"
+                    className="btn-secondary h-12 px-4 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                     onClick={goPrev}
-                    disabled={room.current_opening_index <= 0}
+                    disabled={room.current_opening_index <= 0 || actionLoading}
                   >
                     Prev
                   </button>
-                  <button 
-                    className="btn-primary h-12 px-8 flex items-center gap-2"
+                  <button
+                    className="btn-primary h-12 px-8 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                     onClick={handleNext}
+                    disabled={actionLoading}
                   >
                     <SkipForward className="w-4 h-4" />
                     {room.current_opening_index >= openings.length - 1 ? "Finish Session" : "Next Opening"}
@@ -444,48 +1288,64 @@ export default function RoomPage() {
           )}
         </div>
 
-        {/* Sidebar: People & Info */}
-        <div className="lg:col-span-4 flex flex-col gap-6 min-h-0">
+        <div className="lg:col-span-3 flex flex-col gap-6 min-h-0">
           <div className="card flex-1 flex flex-col min-h-0 p-0 overflow-hidden">
             <div className="flex-1 overflow-y-auto p-6 scrollbar-thin space-y-6">
               <div className="space-y-3">
-                {participants.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <img
-                        src={p.avatar_url || getDefaultAvatar(p.user_name)}
-                        alt={p.user_name}
-                        className="w-8 h-8 rounded-full object-cover border border-slate-700 shrink-0"
-                        referrerPolicy="no-referrer"
-                      />
-                      <div className="min-w-0">
-                        <span className="text-sm font-medium block truncate">{p.user_name}</span>
-                        <div className="flex items-center gap-2 mt-1">
-                          {(p.user_uuid === room?.owner_user_id || p.user_uuid === room?.host_uuid) && (
-                            <span className="pill text-[8px] bg-amber-500/10 text-amber-500 border-amber-500/20">HOST</span>
-                          )}
-                          {hasVoted(p.user_uuid) ? (
-                            allParticipantsVoted ? (
-                              <span className="inline-flex items-center gap-1 text-xs font-bold text-brand-400">
-                                {userScoreMap[p.user_uuid] || "—"}
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-widest text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 rounded-full px-2 py-1">
+                {mergedParticipants.map((participant) => {
+                  const isActive = activeUserSet.has(participant.user_uuid);
+                  const voted = hasVoted(participant.user_uuid);
+                  const score = userScoreMap[participant.user_uuid];
+
+                  return (
+                    <div
+                      key={participant.id}
+                      className={`flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800 transition-opacity ${
+                        isActive ? "opacity-100" : "opacity-55"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="relative shrink-0">
+                          <img
+                            src={participant.avatar_url || getDefaultAvatar(participant.user_name)}
+                            alt={participant.user_name}
+                            className="w-8 h-8 rounded-full object-cover border border-slate-700"
+                            referrerPolicy="no-referrer"
+                          />
+                          <span
+                            className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 ${
+                              isActive
+                                ? "bg-emerald-400 border-slate-950"
+                                : "bg-transparent border-slate-500"
+                            }`}
+                            aria-hidden
+                          />
+                        </div>
+
+                        <div className="min-w-0">
+                          <span className="text-sm font-medium block truncate">{participant.user_name}</span>
+                          <div className="flex items-center gap-2 mt-1">
+                            {participant.user_uuid === hostUuid && (
+                              <span className="pill text-[8px] bg-amber-500/10 text-amber-500 border-amber-500/20">HOST</span>
+                            )}
+                            {voted ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 bg-emerald-400/10 border border-emerald-400/20 rounded-full px-2 py-1">
                                 <CheckCircle2 className="w-3 h-3" />
-                                Voted
+                                Rated
                               </span>
-                            )
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-widest text-slate-400 bg-slate-700 rounded-full px-2 py-1 animate-pulse">
-                              ⏳ Waiting
-                            </span>
-                          )}
+                            ) : null}
+                          </div>
                         </div>
                       </div>
+
+                      <div className="min-w-[2rem] text-right text-sm font-black text-brand-300">
+                        {voted ? score : isActive ? "-" : ""}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
+
               <div className="border-t border-slate-800 pt-6">
                 <div className="flex items-center justify-between mb-4">
                   <div>
@@ -493,6 +1353,7 @@ export default function RoomPage() {
                   </div>
                   <span className="pill text-[8px]">{openings.length} items</span>
                 </div>
+
                 <div className="space-y-2 max-h-72 overflow-y-auto pr-1 scrollbar-thin">
                   {openings.map((opening) => {
                     const isCurrent = opening.order_index === room?.current_opening_index;
@@ -502,13 +1363,15 @@ export default function RoomPage() {
                       <button
                         key={opening.id}
                         type="button"
-                        onClick={() => isOwner && handleSelectOpening(opening.order_index)}
-                        disabled={!isOwner || actionLoading}
+                        onClick={() => isHost && handleSelectOpening(opening.order_index)}
+                        disabled={!isHost || actionLoading}
                         className={`w-full text-left rounded-xl border p-3 transition-all ${
                           isCurrent
                             ? "bg-brand-500/10 border-brand-500/40"
                             : "bg-slate-900/40 border-slate-800 hover:border-slate-700"
-                        } ${isOwner && !actionLoading ? "hover:-translate-y-0.5" : ""} ${actionLoading ? "opacity-50 cursor-not-allowed" : ""}`}
+                        } ${isHost && !actionLoading ? "hover:-translate-y-0.5" : ""} ${
+                          actionLoading ? "opacity-50 cursor-not-allowed" : ""
+                        }`}
                       >
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center text-xs font-black shrink-0">
@@ -531,7 +1394,6 @@ export default function RoomPage() {
                                 No video
                               </span>
                             )}
-
                           </div>
                         </div>
                         {!isPlayable && (
@@ -543,9 +1405,48 @@ export default function RoomPage() {
                 </div>
               </div>
             </div>
+
+            <div className="border-t border-slate-800 px-6 py-4 text-xs text-slate-400 flex items-center justify-between">
+              <span>{ratedConnectedCount}/{connectedCount} rated</span>
+              <span>{connectedUnratedParticipants.length} pending</span>
+            </div>
           </div>
         </div>
       </div>
     </div>
+
+      {confirmDialog.open ? (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl p-6 animate-fade-in">
+            <div className="flex items-start gap-3 mb-4">
+              <div
+                className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                  confirmDialog.danger ? "bg-rose-500/15 text-rose-300" : "bg-amber-500/15 text-amber-300"
+                }`}
+              >
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-100">{confirmDialog.title}</h3>
+                <p className="text-sm text-slate-300 mt-1">{confirmDialog.message}</p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 mt-6">
+              <button type="button" className="btn-ghost" onClick={() => closeConfirmDialog(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={confirmDialog.danger ? "btn-secondary btn-danger" : "btn-primary"}
+                onClick={() => closeConfirmDialog(true)}
+              >
+                {confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }

@@ -33,6 +33,59 @@ Fun full-stack app to watch and rate anime openings in synced rooms.
 ## Notes
 - Auth now uses app users + backend sessions (username/password + bearer token).
 - Rooms now track a real `owner_user_id`; only owner or admin can control/delete a room.
-- Seeded admin account after running latest migration: `admin / admin1234` (change immediately in DB).
+- There are no seeded default credentials in migrations. Create admin users manually through the database when needed.
 - Jikan responses are cached server-side in memory.
 - YouTube IDs are persisted when list entries are created.
+
+## Environment requirements
+The app fails fast on startup when required variables are missing.
+
+Required backend variables:
+- `CLIENT_ORIGIN`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `PARTYKIT_INTERNAL_SECRET`
+- `PARTYKIT_API_SIGNING_SECRET`
+
+Required client variables:
+- `VITE_API_BASE_URL`
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+- `VITE_PARTYKIT_URL`
+
+Required PartyKit runtime variables:
+- `PARTYKIT_API_BASE_URL`
+- `PARTYKIT_INTERNAL_SECRET`
+- `PARTYKIT_API_SIGNING_SECRET`
+
+## Deploy runbook
+1. Prepare secrets and env vars:
+   - Set all required backend, client, and PartyKit variables.
+   - Generate strong random values for `PARTYKIT_INTERNAL_SECRET` and `PARTYKIT_API_SIGNING_SECRET`.
+2. Apply database changes:
+   - Run migrations in order under `supabase/migrations`.
+   - Ensure `supabase/schema.sql` and migration state stay aligned.
+3. Build and deploy services:
+   - `npm run build`
+   - Deploy backend, client, and PartyKit with matching env vars.
+4. Post-deploy verification:
+   - Check `GET /api/health` returns `ok: true`.
+   - Validate auth flow (register/login/profile/logout).
+   - Validate room flow (create room, join code, play, rate, next opening, finish).
+   - Validate PartyKit rejects invalid/missing session token connections.
+   - Validate admin endpoints reject non-admin users with `401/403`.
+
+## Secret rotation runbook
+1. Generate new values for `PARTYKIT_INTERNAL_SECRET` and `PARTYKIT_API_SIGNING_SECRET`.
+2. Update backend and PartyKit env vars together.
+3. Redeploy backend and PartyKit.
+4. Run health checks and room realtime smoke test.
+5. Revoke old secrets from hosting platform.
+
+## Security checklist
+- No hardcoded credentials or secrets in repository files.
+- RLS enabled for `app_users`, `app_user_sessions`, `lists`, `list_openings`, `rooms`, `room_members`, `ratings`, `room_rankings`, and `room_messages`.
+- Admin endpoints require authenticated admin role.
+- PartyKit validates session token on connect and rejects invalid clients.
+- Internal PartyKit-backend calls require HMAC signature with timestamp/nonce.
+- 500 responses are generic to clients; full detail is server-side logs only.
