@@ -156,8 +156,28 @@ export default class AnimeRoomParty implements Party.Server {
           body: JSON.stringify({ token: sessionToken }),
         },
       );
-    } catch {
-      conn.close(4401, "Invalid or expired session");
+    } catch (error: any) {
+      const status = Number(error?.status || 0);
+      const message = String(error?.message || "");
+      const isSessionFailure = status === 401 && /invalid session token|session expired|invalid session user/i.test(message);
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "partykit_auth_verify_failed",
+          roomId: this.party.id,
+          status,
+          message,
+          ts: Date.now(),
+        }),
+      );
+
+      if (isSessionFailure) {
+        conn.close(4401, "Invalid or expired session");
+        return;
+      }
+
+      conn.close(1013, "Auth service unavailable");
       return;
     }
 
@@ -730,7 +750,9 @@ export default class AnimeRoomParty implements Party.Server {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Internal API ${path} failed (${response.status}): ${body}`);
+      const error = new Error(`Internal API ${path} failed (${response.status}): ${body}`) as Error & { status?: number };
+      error.status = response.status;
+      throw error;
     }
 
     return (await response.json()) as T;

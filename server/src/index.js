@@ -249,6 +249,20 @@ async function createSessionForUser(userId) {
   return { token, expiresAt };
 }
 
+async function bumpSessionActivity(token) {
+  const nextExpiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+  await supabaseAdmin
+    .from("app_user_sessions")
+    .update({
+      last_seen_at: new Date().toISOString(),
+      expires_at: nextExpiresAt,
+    })
+    .eq("token", token);
+
+  return nextExpiresAt;
+}
+
 async function getAuthContext(req) {
   const token = getBearerToken(req);
   if (!token) return null;
@@ -275,13 +289,9 @@ async function getAuthContext(req) {
 
   if (userError || !user) return null;
 
-  // Keep session alive marker for auditability.
-  await supabaseAdmin
-    .from("app_user_sessions")
-    .update({ last_seen_at: new Date().toISOString() })
-    .eq("token", token);
+  const nextExpiresAt = await bumpSessionActivity(token);
 
-  return { token, user: mapUser(user), expiresAt: session.expires_at };
+  return { token, user: mapUser(user), expiresAt: nextExpiresAt };
 }
 
 async function requireAuth(req, res) {
@@ -520,7 +530,8 @@ app.post("/api/internal/auth/session/verify", async (req, res) => {
       return res.status(401).json({ error: "Invalid session user" });
     }
 
-    return res.json({ user: mapUser(user), expiresAt: session.expires_at });
+    const nextExpiresAt = await bumpSessionActivity(token);
+    return res.json({ user: mapUser(user), expiresAt: nextExpiresAt });
   } catch (error) {
     return internalError(req, res, error, "internal_auth_verify_failed");
   }
