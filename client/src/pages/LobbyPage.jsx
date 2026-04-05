@@ -23,10 +23,18 @@ export default function LobbyPage() {
   const [uiNotice, setUiNotice] = useState(null);
 
   useEffect(() => {
-    loadLists();
     loadPublicRooms();
     syncIdentityWithServer();
   }, []);
+
+  useEffect(() => {
+    if (!identity?.token) {
+      setLists([]);
+      return;
+    }
+
+    loadLists();
+  }, [identity?.token]);
 
   useEffect(() => {
     if (!uiNotice) return;
@@ -61,12 +69,23 @@ export default function LobbyPage() {
   }
 
   async function loadLists() {
+    const current = getIdentity();
+    if (!current?.token) {
+      setLists([]);
+      return;
+    }
+
     try {
       const data = await apiGet("/api/lists");
       const nextLists = data.lists || [];
       setLists(nextLists);
       if (!selectedList && nextLists?.[0]?.id) setSelectedList(nextLists[0].id);
-    } catch {
+    } catch (error) {
+      const message = String(error?.message || "");
+      if (message.toLowerCase().includes("unauthorized")) {
+        clearIdentity();
+        setIdentity(null);
+      }
       setLists([]);
     }
   }
