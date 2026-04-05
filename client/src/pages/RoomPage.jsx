@@ -8,6 +8,8 @@ import {
   Users,
   Play,
   SkipForward,
+  Volume2,
+  VolumeX,
   Trophy,
   Settings,
   Star,
@@ -129,6 +131,8 @@ export default function RoomPage() {
 
   const [playerReady, setPlayerReady] = useState(false);
   const [playerIsPlaying, setPlayerIsPlaying] = useState(false);
+  const [playerVolume, setPlayerVolume] = useState(80);
+  const [playerMuted, setPlayerMuted] = useState(false);
   const [playerError, setPlayerError] = useState("");
   const [uiNotice, setUiNotice] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState({
@@ -149,10 +153,12 @@ export default function RoomPage() {
   const currentOpeningRef = useRef(null);
   const isHostRef = useRef(false);
   const playerReadyRef = useRef(false);
+  const expectedRemotePlaybackRef = useRef(false);
   const lastIncomingPlayerStateRef = useRef(null);
 
   const playerRef = useRef(null);
   const playerContainerRef = useRef(null);
+  const currentVideoIdRef = useRef("");
   const confirmResolverRef = useRef(null);
   const nativeControlsRef = useRef(false);
 
@@ -207,6 +213,36 @@ export default function RoomPage() {
   useEffect(() => {
     playerReadyRef.current = playerReady;
   }, [playerReady]);
+
+  function isPlayerApiReady(player) {
+    return Boolean(player && typeof player.getPlayerState === "function");
+  }
+
+  function safeLoadVideoById(videoId, startSeconds = 0) {
+    const player = playerRef.current;
+    const normalizedVideoId = String(videoId || "").trim();
+    if (!normalizedVideoId) return false;
+    if (!isPlayerApiReady(player)) return false;
+
+    player.loadVideoById?.(normalizedVideoId, Math.max(0, Number(startSeconds) || 0));
+    currentVideoIdRef.current = normalizedVideoId;
+    return true;
+  }
+
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player || !playerReadyRef.current) return;
+
+    const safeVolume = Math.max(0, Math.min(100, Number(playerVolume) || 0));
+
+    if (playerMuted || safeVolume <= 0) {
+      player.mute?.();
+      return;
+    }
+
+    player.unMute?.();
+    player.setVolume?.(safeVolume);
+  }, [playerVolume, playerMuted, playerReady]);
 
   const votedUserSet = useMemo(
     () => new Set(currentOpeningVotes.map((row) => row.user_uuid)),
@@ -429,7 +465,6 @@ export default function RoomPage() {
 
       try {
         const ws = new WebSocket(buildPartySocketUrl(roomId, identity));
-        reconnectAttemptRef.current += 1;
         wsRef.current = ws;
 
         ws.onopen = () => {
@@ -483,7 +518,8 @@ export default function RoomPage() {
 
           if (!closedByEffect) {
             if (!reconnectTimerRef.current) {
-              const retryMs = Math.min(4000, 1200 + reconnectAttemptRef.current * 250);
+              reconnectAttemptRef.current += 1;
+              const retryMs = Math.min(15000, 1000 * (2 ** Math.max(0, reconnectAttemptRef.current - 1)));
               reconnectTimerRef.current = window.setTimeout(() => {
                 reconnectTimerRef.current = null;
                 connect();
@@ -500,7 +536,8 @@ export default function RoomPage() {
         setPartyError("Realtime sync unavailable. Retrying...");
 
         if (!reconnectTimerRef.current) {
-          const retryMs = Math.min(4500, 1800 + reconnectAttemptRef.current * 300);
+          reconnectAttemptRef.current += 1;
+          const retryMs = Math.min(15000, 1000 * (2 ** Math.max(0, reconnectAttemptRef.current - 1)));
           reconnectTimerRef.current = window.setTimeout(() => {
             reconnectTimerRef.current = null;
             connect();
@@ -526,94 +563,94 @@ export default function RoomPage() {
   }, [roomId, identity?.token]);
 
   useEffect(() => {
-    if (room?.status !== "playing" || !currentOpening?.youtube_video_id) {
-      setPlayerReady(false);
-      setPlayerIsPlaying(false);
-
-      if (playerRef.current) {
-        playerRef.current.destroy();
-        playerRef.current = null;
-      }
-
-      return;
-    }
-
     let cancelled = false;
 
     async function mountPlayer() {
       try {
         await ensureYoutubeIframeApi();
         if (cancelled || !playerContainerRef.current) return;
+        if (playerRef.current) return;
 
-        const videoId = currentOpening.youtube_video_id;
-        const shouldUseNativeControls = isHost;
-        const shouldRecreatePlayer =
-          !playerRef.current || nativeControlsRef.current !== shouldUseNativeControls;
+        nativeControlsRef.current = true;
+        playerRef.current = new window.YT.Player(playerContainerRef.current, {
+          playerVars: {
+            autoplay: 0,
+            controls: 1,
+            disablekb: 0,
+            modestbranding: 1,
+            rel: 0,
+            playsinline: 1,
+            origin: window.location.origin,
+          },
+          events: {
+            onReady: () => {
+              if (cancelled) return;
 
-        if (shouldRecreatePlayer) {
-          if (playerRef.current) {
-            playerRef.current.destroy();
-            playerRef.current = null;
-          }
+              setPlayerReady(true);
+              setPlayerIsPlaying(false);
+              setPlayerError("");
 
-          nativeControlsRef.current = shouldUseNativeControls;
-          playerRef.current = new window.YT.Player(playerContainerRef.current, {
-            videoId,
-            playerVars: {
-              autoplay: 0,
-              controls: shouldUseNativeControls ? 1 : 0,
-              disablekb: shouldUseNativeControls ? 0 : 1,
-              modestbranding: 1,
-              rel: 0,
-              playsinline: 1,
-              origin: window.location.origin,
+              const safeVolume = Math.max(0, Math.min(100, Number(playerVolume) || 0));
+              if (playerMuted || safeVolume <= 0) {
+                playerRef.current?.mute?.();
+              } else {
+                playerRef.current?.unMute?.();
+                playerRef.current?.setVolume?.(safeVolume);
+              }
+
+              const firstVideoId = String(currentOpeningRef.current?.youtube_video_id || "").trim();
+              if (roomRef.current?.status === "playing" && firstVideoId) {
+                remotePlayerMutationUntilRef.current = Date.now() + 500;
+                if (safeLoadVideoById(firstVideoId, 0)) {
+                  playerRef.current?.pauseVideo?.();
+                }
+              }
+
+              if (lastIncomingPlayerStateRef.current) {
+                applyRemotePlayerState(lastIncomingPlayerStateRef.current, false);
+              }
             },
-            events: {
-              onReady: () => {
+            onStateChange: (event) => {
+              const ytState = Number(event.data);
+              const PLAYING = Number(window.YT?.PlayerState?.PLAYING);
+              const PAUSED = Number(window.YT?.PlayerState?.PAUSED);
+              const ENDED = Number(window.YT?.PlayerState?.ENDED);
+              const CUED = Number(window.YT?.PlayerState?.CUED);
+
+              if (ytState === CUED || ytState === PLAYING || ytState === PAUSED) {
                 setPlayerReady(true);
-                setPlayerIsPlaying(false);
-                setPlayerError("");
+              }
 
-                if (lastIncomingPlayerStateRef.current) {
-                  applyRemotePlayerState(lastIncomingPlayerStateRef.current, false);
-                }
-              },
-              onStateChange: (event) => {
-                const ytState = Number(event.data);
-                const PLAYING = Number(window.YT?.PlayerState?.PLAYING);
-                const PAUSED = Number(window.YT?.PlayerState?.PAUSED);
-                const ENDED = Number(window.YT?.PlayerState?.ENDED);
-                const CUED = Number(window.YT?.PlayerState?.CUED);
+              if (ytState === PLAYING) setPlayerIsPlaying(true);
+              if (ytState === PAUSED || ytState === ENDED) setPlayerIsPlaying(false);
 
-                if (ytState === CUED || ytState === PLAYING || ytState === PAUSED) {
-                  setPlayerReady(true);
+              if (!isHostRef.current && Date.now() >= remotePlayerMutationUntilRef.current) {
+                const shouldPlay = expectedRemotePlaybackRef.current;
+
+                if (shouldPlay && (ytState === PAUSED || ytState === ENDED)) {
+                  remotePlayerMutationUntilRef.current = Date.now() + 450;
+                  playerRef.current?.playVideo?.();
                 }
 
-                if (ytState === PLAYING) setPlayerIsPlaying(true);
-                if (ytState === PAUSED || ytState === ENDED) setPlayerIsPlaying(false);
-
-                if (!isHostRef.current) return;
-                if (Date.now() < remotePlayerMutationUntilRef.current) return;
-
-                if (ytState === PLAYING) {
-                  publishHostPlayerState("host-playing", true);
+                if (!shouldPlay && ytState === PLAYING) {
+                  remotePlayerMutationUntilRef.current = Date.now() + 450;
+                  playerRef.current?.pauseVideo?.();
                 }
+              }
 
-                if (ytState === PAUSED || ytState === ENDED) {
-                  publishHostPlayerState("host-paused", false);
-                }
-              },
+              if (!isHostRef.current) return;
+              if (Date.now() < remotePlayerMutationUntilRef.current) return;
+
+              if (ytState === PLAYING) {
+                publishHostPlayerState("host-playing", true);
+              }
+
+              if (ytState === PAUSED || ytState === ENDED) {
+                publishHostPlayerState("host-paused", false);
+              }
             },
-          });
-
-          return;
-        }
-
-        setPlayerReady(false);
-        setPlayerIsPlaying(false);
-        remotePlayerMutationUntilRef.current = Date.now() + 500;
-        playerRef.current.loadVideoById(videoId, 0);
-        playerRef.current.pauseVideo();
+          },
+        });
       } catch (error) {
         setPlayerError(error.message || "Could not initialize YouTube player");
       }
@@ -624,7 +661,36 @@ export default function RoomPage() {
     return () => {
       cancelled = true;
     };
-  }, [room?.status, currentOpening?.youtube_video_id, isHost]);
+  }, []);
+
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!isPlayerApiReady(player) || !playerReadyRef.current) return;
+
+    if (room?.status !== "playing") {
+      player.pauseVideo?.();
+      setPlayerIsPlaying(false);
+      return;
+    }
+
+    const nextVideoId = String(currentOpening?.youtube_video_id || "").trim();
+    if (!nextVideoId) {
+      player.pauseVideo?.();
+      setPlayerIsPlaying(false);
+      return;
+    }
+
+    if (currentVideoIdRef.current === nextVideoId) {
+      return;
+    }
+
+    setPlayerReady(false);
+    setPlayerIsPlaying(false);
+    remotePlayerMutationUntilRef.current = Date.now() + 500;
+    if (safeLoadVideoById(nextVideoId, 0)) {
+      player.pauseVideo?.();
+    }
+  }, [room?.status, currentOpening?.youtube_video_id]);
 
   useEffect(() => {
     return () => {
@@ -632,6 +698,7 @@ export default function RoomPage() {
         playerRef.current.destroy();
         playerRef.current = null;
       }
+      currentVideoIdRef.current = "";
     };
   }, []);
 
@@ -645,7 +712,7 @@ export default function RoomPage() {
     return () => {
       window.clearInterval(interval);
     };
-  }, [isHost, room?.status, currentOpening?.youtube_video_id]);
+  }, [isHost, room?.status]);
 
   useEffect(() => {
     if (!uiNotice) return;
@@ -838,11 +905,12 @@ export default function RoomPage() {
       setPlayerIsPlaying(false);
 
       const nextVideoId = String(payload.videoId || "").trim();
-      if (playerRef.current && nextVideoId) {
+      if (nextVideoId && isPlayerApiReady(playerRef.current)) {
         setPlayerReady(false);
         remotePlayerMutationUntilRef.current = Date.now() + 500;
-        playerRef.current.loadVideoById(nextVideoId, 0);
-        playerRef.current.pauseVideo();
+        if (safeLoadVideoById(nextVideoId, 0)) {
+          playerRef.current?.pauseVideo?.();
+        }
       }
 
       return;
@@ -861,7 +929,7 @@ export default function RoomPage() {
 
   function applyRemotePlayerState(snapshot, driftOnly) {
     const player = playerRef.current;
-    if (!player || !playerReadyRef.current) return;
+    if (!isPlayerApiReady(player) || !playerReadyRef.current) return;
 
     const roomOpeningIndex = Number(roomRef.current?.current_opening_index || 0);
     const snapshotOpeningIndex = Number(snapshot?.openingIndex);
@@ -877,8 +945,9 @@ export default function RoomPage() {
     if (snapshotVideoId && snapshotVideoId !== expectedVideoId) {
       remotePlayerMutationUntilRef.current = Date.now() + 600;
       setPlayerReady(false);
-      player.loadVideoById(snapshotVideoId, targetTimestamp);
-      player.pauseVideo();
+      if (safeLoadVideoById(snapshotVideoId, targetTimestamp)) {
+        player.pauseVideo?.();
+      }
       return;
     }
 
@@ -898,6 +967,7 @@ export default function RoomPage() {
     const PLAYING = Number(window.YT?.PlayerState?.PLAYING);
     const currentState = Number(player.getPlayerState?.());
     const shouldPlay = Boolean(snapshot?.isPlaying);
+    expectedRemotePlaybackRef.current = shouldPlay;
 
     if (shouldPlay && currentState !== PLAYING) {
       remotePlayerMutationUntilRef.current = Date.now() + 500;
@@ -916,7 +986,7 @@ export default function RoomPage() {
     if (!isHostRef.current) return;
 
     const player = playerRef.current;
-    if (!player || !currentOpeningRef.current) return;
+    if (!isPlayerApiReady(player) || !currentOpeningRef.current) return;
 
     const currentTime = Number(player.getCurrentTime?.() || 0);
     const ytPlaying = Number(window.YT?.PlayerState?.PLAYING);
@@ -929,13 +999,17 @@ export default function RoomPage() {
       isPlaying: typeof isPlayingOverride === "boolean" ? isPlayingOverride : measuredIsPlaying,
       reason,
     });
+
+    expectedRemotePlaybackRef.current = typeof isPlayingOverride === "boolean"
+      ? isPlayingOverride
+      : measuredIsPlaying;
   }
 
   function publishHostDriftSync() {
     if (!isHostRef.current || roomRef.current?.status !== "playing") return;
 
     const player = playerRef.current;
-    if (!player || !playerReadyRef.current || !currentOpeningRef.current) return;
+    if (!isPlayerApiReady(player) || !playerReadyRef.current || !currentOpeningRef.current) return;
 
     const ytPlaying = Number(window.YT?.PlayerState?.PLAYING);
 
@@ -946,6 +1020,18 @@ export default function RoomPage() {
       isPlaying: Number(player.getPlayerState?.()) === ytPlaying,
       reason: "periodic-sync",
     });
+
+    expectedRemotePlaybackRef.current = Number(player.getPlayerState?.()) === ytPlaying;
+  }
+
+  function handleVolumeChange(nextVolume) {
+    const safeVolume = Math.max(0, Math.min(100, Number(nextVolume) || 0));
+    setPlayerVolume(safeVolume);
+    setPlayerMuted(safeVolume <= 0);
+  }
+
+  function toggleMute() {
+    setPlayerMuted((prev) => !prev);
   }
 
   async function fetchParticipants() {
@@ -1261,17 +1347,25 @@ export default function RoomPage() {
                   VIEW RANKINGS
                 </Link>
               </div>
-            ) : !currentOpening?.youtube_video_id ? (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
-                <Play className="w-16 h-16 text-slate-600 mb-4" />
-                <h2 className="text-2xl font-black mb-2">Video unavailable</h2>
-                <p className="text-slate-400 max-w-md mb-6">
-                  This opening does not have an embeddable YouTube video yet.
-                </p>
-              </div>
             ) : (
               <>
                 <div ref={playerContainerRef} className="w-full h-full" />
+                {!currentOpening?.youtube_video_id ? (
+                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center text-center p-8 bg-black/75">
+                    <Play className="w-16 h-16 text-slate-600 mb-4" />
+                    <h2 className="text-2xl font-black mb-2">Video unavailable</h2>
+                    <p className="text-slate-400 max-w-md mb-6">
+                      This opening does not have an embeddable YouTube video yet.
+                    </p>
+                  </div>
+                ) : null}
+                {!isHost && (
+                  <div
+                    className="absolute inset-0 z-20"
+                    aria-hidden="true"
+                    title="Only the host can control playback"
+                  />
+                )}
                 {tickNow < graceUntilTs && (
                   <div className="absolute top-3 right-3 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full bg-slate-900/90 border border-slate-700 text-amber-300">
                     Loading sync...
@@ -1282,6 +1376,38 @@ export default function RoomPage() {
                     {playerError}
                   </div>
                 ) : null}
+                <div className="absolute left-3 right-3 bottom-3 z-30 rounded-xl border border-slate-700/80 bg-slate-950/85 backdrop-blur px-3 py-2">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      className="p-2 rounded-lg bg-slate-900 hover:bg-slate-800 transition-colors"
+                      onClick={toggleMute}
+                      aria-label={playerMuted || playerVolume <= 0 ? "Unmute" : "Mute"}
+                    >
+                      {playerMuted || playerVolume <= 0 ? (
+                        <VolumeX className="w-4 h-4 text-slate-200" />
+                      ) : (
+                        <Volume2 className="w-4 h-4 text-slate-200" />
+                      )}
+                    </button>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={playerVolume}
+                      onChange={(event) => handleVolumeChange(event.target.value)}
+                      className="w-full accent-brand-400"
+                      aria-label="Player volume"
+                    />
+                    <span className="text-[11px] tabular-nums w-9 text-right text-slate-300">
+                      {playerMuted ? 0 : playerVolume}
+                    </span>
+                  </div>
+                  {!isHost ? (
+                    <p className="text-[10px] text-slate-400 mt-1 uppercase tracking-wider">Solo el host controla play/pausa/seek</p>
+                  ) : null}
+                </div>
               </>
             )}
           </div>
