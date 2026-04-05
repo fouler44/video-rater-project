@@ -75,6 +75,18 @@ Required PartyKit runtime variables:
    - Validate PartyKit rejects invalid/missing session token connections.
    - Validate admin endpoints reject non-admin users with `401/403`.
 
+## Vercel backend
+- Deploy the backend from the repository root using the `api/[...path].js` function entrypoint.
+- Do not run `app.listen()` on Vercel; the app is exported as a serverless handler there.
+- Set `CLIENT_ORIGIN`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `PARTYKIT_INTERNAL_SECRET`, and `PARTYKIT_API_SIGNING_SECRET` in the Vercel project env vars.
+- Keep the frontend on a separate deployment or static host unless you also wire a Vercel frontend build.
+
+## Vercel frontend
+- Deploy the frontend as a separate Vercel project with `client` as the root directory.
+- The client already has SPA rewrites in `client/vercel.json`, so React Router paths keep working.
+- Set `VITE_API_BASE_URL` to the backend Vercel URL, not `localhost`.
+- Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_PARTYKIT_URL` in the frontend project env vars.
+
 ## Secret rotation runbook
 1. Generate new values for `PARTYKIT_INTERNAL_SECRET` and `PARTYKIT_API_SIGNING_SECRET`.
 2. Update backend and PartyKit env vars together.

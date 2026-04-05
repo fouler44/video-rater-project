@@ -1666,15 +1666,20 @@ app.delete("/api/rooms/:roomId", async (req, res) => {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const clientDist = path.resolve(__dirname, "../../client/dist");
+const isVercel = Boolean(process.env.VERCEL);
 
-if (process.env.NODE_ENV === "production") {
+if (process.env.NODE_ENV === "production" && !isVercel) {
   app.use(express.static(clientDist));
   app.get("*", (_, res) => {
     res.sendFile(path.join(clientDist, "index.html"));
   });
 }
 
-app.listen(port, () => {
-  // eslint-disable-next-line no-console
-  console.log(`API running on http://localhost:${port}`);
-});
+if (!isVercel) {
+  app.listen(port, () => {
+    // eslint-disable-next-line no-console
+    console.log(`API running on http://localhost:${port}`);
+  });
+}
+
+export default app;
