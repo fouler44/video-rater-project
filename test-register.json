@@ -1,6 +1,6 @@
 {
-  "username": "papu",
-  "password": "boinga",
-  "displayName": "Fouler",
-  "avatarUrl": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ70R9U5AioppRT-zC3MzG8t-lbqfvHJQadkRIk0EMuqL-b9_-m27YC1VdSSFx49CkbMWV7-j0At45DlOeT22_K9GQB1QpqEOameUYmYQ&s=10"
+  "username": "example_user",
+  "password": "change_me_before_request",
+  "displayName": "Example User",
+  "avatarUrl": "https://example.com/avatar.png"
 }

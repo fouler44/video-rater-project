@@ -33,6 +33,7 @@ create table if not exists lists (
   name text not null,
   created_by text not null,
   is_preset boolean not null default false,
+  list_source text not null default 'mal' check (list_source in ('mal', 'youtube')),
   created_at timestamptz not null default now()
 );
 

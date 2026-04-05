@@ -2,29 +2,66 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiDelete, apiGet, apiPost } from "../lib/api";
 import { getIdentity } from "../lib/identity";
-import { 
-  ArrowLeft, 
-  Plus, 
-  Search, 
-  Trash2, 
-  Save, 
-  Zap, 
-  Layout, 
-  ChevronRight, 
-  Music, 
-  Play, 
+import {
+  ArrowLeft,
+  Search,
+  Trash2,
+  Save,
+  Layout,
+  Music,
   CheckCircle2,
   Loader2,
   AlertTriangle,
-  X
+  X,
+  Link2,
+  ListVideo,
+  Pencil,
+  Plus,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-
-const YOUTUBE_POPULAR_LIST_MAX = 50;
 
 function sanitizeOpeningLabel(value) {
   if (!value) return "OP1";
   return String(value).replace(/^\d+\s*[:-]\s*/g, "").trim();
+}
+
+function extractYoutubeVideoId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  if (/^[a-zA-Z0-9_-]{11}$/.test(raw)) return raw;
+
+  try {
+    const url = new URL(raw);
+    const hostname = String(url.hostname || "").toLowerCase();
+
+    if (hostname.includes("youtu.be")) {
+      const fromPath = String(url.pathname || "").replace(/^\//, "").trim();
+      if (/^[a-zA-Z0-9_-]{11}$/.test(fromPath)) return fromPath;
+    }
+
+    const fromV = String(url.searchParams.get("v") || "").trim();
+    if (/^[a-zA-Z0-9_-]{11}$/.test(fromV)) return fromV;
+
+    const pathParts = String(url.pathname || "").split("/").filter(Boolean);
+    const embedIndex = pathParts.findIndex((part) => part === "embed" || part === "shorts");
+    if (embedIndex >= 0 && /^[a-zA-Z0-9_-]{11}$/.test(pathParts[embedIndex + 1] || "")) {
+      return pathParts[embedIndex + 1];
+    }
+
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+function mapOpeningWithManualInput(item) {
+  const youtubeId = String(item?.youtube_video_id || "").trim();
+  return {
+    ...item,
+    youtube_video_id: youtubeId,
+    manual_video_input: youtubeId,
+  };
 }
 
 export default function CreateListPage() {
@@ -32,24 +69,24 @@ export default function CreateListPage() {
   const identity = getIdentity();
 
   const [listName, setListName] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [selectedAnime, setSelectedAnime] = useState(null);
-  const [animeOpenings, setAnimeOpenings] = useState([]);
-  const [ytResults, setYtResults] = useState([]);
-  const [isYtSearching, setIsYtSearching] = useState(false);
-  const [currentOpeningToAttach, setCurrentOpeningToAttach] = useState("");
   const [listItems, setListItems] = useState([]);
   const [saving, setSaving] = useState(false);
 
-  const [myCustomLists, setMyCustomLists] = useState([]);
+  const [myMalLists, setMyMalLists] = useState([]);
+  const [myYoutubeLists, setMyYoutubeLists] = useState([]);
   const [editingListId, setEditingListId] = useState("");
+  const [editingSource, setEditingSource] = useState("mal");
   const [deletingListId, setDeletingListId] = useState("");
 
-  const [quickListName, setQuickListName] = useState("");
-  const [quickCount, setQuickCount] = useState(25);
-  const [isGeneratingQuickList, setIsGeneratingQuickList] = useState(false);
+  const [playlistUrl, setPlaylistUrl] = useState("");
+  const [playlistListName, setPlaylistListName] = useState("");
+  const [isImportingPlaylist, setIsImportingPlaylist] = useState(false);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [addingAnimeId, setAddingAnimeId] = useState("");
+
   const [uiNotice, setUiNotice] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState({
     open: false,
@@ -60,9 +97,9 @@ export default function CreateListPage() {
     payloadId: "",
   });
 
-  const canSave = useMemo(
-    () => listName.trim().length > 0 && listItems.length > 0,
-    [listName, listItems],
+  const canSaveMal = useMemo(
+    () => editingSource !== "youtube" && listName.trim().length > 0 && listItems.length > 0,
+    [editingSource, listItems.length, listName],
   );
 
   useEffect(() => {
@@ -88,14 +125,11 @@ export default function CreateListPage() {
 
   function resetEditor() {
     setEditingListId("");
+    setEditingSource("mal");
     setListName("");
     setListItems([]);
     setSearchQuery("");
     setSearchResults([]);
-    setSelectedAnime(null);
-    setAnimeOpenings([]);
-    setYtResults([]);
-    setCurrentOpeningToAttach("");
   }
 
   async function loadMyLists() {
@@ -103,53 +137,56 @@ export default function CreateListPage() {
 
     try {
       const data = await apiGet("/api/lists");
-      const mine = (data.lists || []).filter((list) => !list.is_preset && list.created_by === identity.userId);
-      setMyCustomLists(mine);
-    } catch {
-      setMyCustomLists([]);
-    }
-  }
-
-  async function generatePopularListQuickly() {
-    if (!identity) return;
-
-    const count = Math.max(1, Math.min(YOUTUBE_POPULAR_LIST_MAX, Number(quickCount) || 25));
-    setIsGeneratingQuickList(true);
-
-    try {
-      const generated = await apiGet(`/api/lists/preset/top-mal-openings?source=popular&limit=${count}`);
-      const finalName = quickListName.trim() || `Popular Top ${count} Openings`;
-
-      const payload = (generated.openings || []).map((opening) => ({
-        anime_id: opening.anime_id,
-        anime_title: opening.anime_title,
-        opening_label: opening.opening_label,
-        youtube_video_id: opening.youtube_video_id,
-        thumbnail_url: opening.thumbnail_url,
-      }));
-
-      const saved = await apiPost("/api/lists/save", {
-        name: finalName,
-        isPreset: false,
-        openings: payload,
+      const isAdmin = String(identity.role || "") === "admin";
+      const visible = (data.lists || []).filter((list) => {
+        if (isAdmin) return true;
+        if (list.is_preset) return false;
+        return list.created_by === identity.userId;
       });
 
-      setQuickListName("");
-      await loadMyLists();
-      await startEditList(saved.list.id);
-      showNotice(`List created with ${payload.length} openings.`, "success");
-    } catch (error) {
-      showNotice(error.message || "Could not generate quick list", "error");
-    } finally {
-      setIsGeneratingQuickList(false);
+      const malLists = visible.filter((list) => (list.list_source || "mal") !== "youtube");
+      const youtubeLists = visible.filter((list) => list.list_source === "youtube");
+
+      setMyMalLists(malLists);
+      setMyYoutubeLists(youtubeLists);
+    } catch {
+      setMyMalLists([]);
+      setMyYoutubeLists([]);
     }
   }
 
-  async function searchAnime() {
+  async function importYoutubePlaylistList() {
+    if (!identity || !playlistUrl.trim()) return;
+
+    setIsImportingPlaylist(true);
+    try {
+      const saved = await apiPost("/api/lists/import-youtube-playlist", {
+        playlistUrl: playlistUrl.trim(),
+        listName: playlistListName.trim() || undefined,
+      });
+
+      setPlaylistUrl("");
+      setPlaylistListName("");
+      await loadMyLists();
+      await startViewYoutubeList(saved.list.id);
+      showNotice(`Playlist loaded with ${saved.list.count} videos.`, "success");
+    } catch (error) {
+      showNotice(error.message || "Could not load YouTube playlist", "error");
+    } finally {
+      setIsImportingPlaylist(false);
+    }
+  }
+
+  async function searchAnimeForMalList() {
+    if (editingSource === "youtube") {
+      showNotice("Select a MAL list to add anime entries.", "error");
+      return;
+    }
+
     if (!searchQuery.trim()) return;
     setIsSearching(true);
     try {
-      const data = await apiGet(`/api/jikan/search-anime?q=${encodeURIComponent(searchQuery)}&limit=8`);
+      const data = await apiGet(`/api/jikan/search-anime?q=${encodeURIComponent(searchQuery)}&limit=10`);
       setSearchResults(data.data || []);
     } catch {
       setSearchResults([]);
@@ -158,83 +195,105 @@ export default function CreateListPage() {
     }
   }
 
-  async function selectAnime(anime) {
-    setSelectedAnime(anime);
-    setSearchResults([]);
-    setYtResults([]);
-    setCurrentOpeningToAttach("");
-
-    try {
-      const data = await apiGet(`/api/jikan/anime/${anime.mal_id}/themes`);
-      const openings = (data?.data?.openings || []).map((op) => sanitizeOpeningLabel(op)).filter(Boolean);
-      setAnimeOpenings(openings.length > 0 ? openings : ["OP1"]);
-    } catch {
-      setAnimeOpenings(["OP1"]);
+  async function addAnimeToMalList(anime) {
+    if (editingSource === "youtube") {
+      showNotice("You cannot add anime to a YouTube list.", "error");
+      return;
     }
-  }
 
-  async function searchYouTube(opening) {
-    if (!selectedAnime) return;
-    setCurrentOpeningToAttach(opening);
-    setIsYtSearching(true);
+    const animeId = String(anime?.mal_id || "").trim();
+    if (!animeId) return;
+
+    setAddingAnimeId(animeId);
+
     try {
-      const query = `${selectedAnime.title} ${opening} opening official crunchyroll tv size 1:30`;
-      const data = await apiGet(`/api/youtube/search?q=${encodeURIComponent(query)}`);
-      setYtResults(data.items || []);
-    } catch {
-      setYtResults([]);
+      let openingLabels = ["OP1"];
+      try {
+        const data = await apiGet(`/api/jikan/anime/${animeId}/themes`);
+        const fromThemes = (data?.data?.openings || [])
+          .map((label) => sanitizeOpeningLabel(label))
+          .filter(Boolean);
+        if (fromThemes.length > 0) {
+          openingLabels = [...new Set(fromThemes)];
+        }
+      } catch {
+        openingLabels = ["OP1"];
+      }
+
+      const animeTitle = anime.title_english || anime.title || `MAL ${animeId}`;
+      const thumb = anime.images?.jpg?.image_url || anime.images?.jpg?.large_image_url || "";
+
+      const existingKeys = new Set(
+        listItems.map((item) => `${item.anime_id}::${String(item.opening_label || "").trim().toLowerCase()}`),
+      );
+
+      const rowsToAdd = openingLabels
+        .map((label) => ({
+          anime_id: Number(animeId),
+          anime_title: animeTitle,
+          opening_label: label,
+          youtube_video_id: "",
+          manual_video_input: "",
+          thumbnail_url: thumb,
+        }))
+        .filter((row) => !existingKeys.has(`${row.anime_id}::${String(row.opening_label || "").trim().toLowerCase()}`));
+
+      if (rowsToAdd.length === 0) {
+        showNotice("That anime (openings) is already in the list.", "error");
+        return;
+      }
+
+      setListItems((prev) => [...prev, ...rowsToAdd]);
+      showNotice(`${rowsToAdd.length} opening(s) added without YouTube link.`, "success");
     } finally {
-      setIsYtSearching(false);
+      setAddingAnimeId("");
     }
   }
 
-  function addToList(video) {
-    if (!selectedAnime || !currentOpeningToAttach) return;
-
-    const newItem = {
-      anime_id: selectedAnime.mal_id,
-      anime_title: selectedAnime.title_english || selectedAnime.title,
-      opening_label: currentOpeningToAttach,
-      youtube_video_id: video.id.videoId,
-      thumbnail_url:
-        video.snippet.thumbnails?.medium?.url ||
-        selectedAnime.images?.jpg?.image_url ||
-        "",
-      channel_title: video.snippet.channelTitle || "",
-      duration_text: video.durationText || "",
-    };
-
-    setListItems((prev) => [...prev, newItem]);
-    setYtResults([]);
-    setCurrentOpeningToAttach("");
-    setSelectedAnime(null);
-    setAnimeOpenings([]);
-    setSearchQuery("");
-  }
-
-  async function startEditList(listId) {
+  async function startEditMalList(listId) {
     if (!listId || !identity) {
       resetEditor();
       return;
     }
 
     setEditingListId(listId);
-    const selected = myCustomLists.find((item) => item.id === listId);
+    setEditingSource("mal");
+    const selected = myMalLists.find((item) => item.id === listId);
     setListName(selected?.name || "");
 
     try {
       const data = await apiGet(`/api/lists/${listId}/openings`);
-      setListItems(data.openings || []);
+      setListItems((data.openings || []).map(mapOpeningWithManualInput));
     } catch (error) {
       showNotice(error.message || "Could not load list", "error");
+    }
+  }
+
+  async function startViewYoutubeList(listId) {
+    if (!listId || !identity) {
+      resetEditor();
       return;
+    }
+
+    setEditingListId(listId);
+    setEditingSource("youtube");
+    const selected = myYoutubeLists.find((item) => item.id === listId);
+    setListName(selected?.name || "");
+
+    try {
+      const data = await apiGet(`/api/lists/${listId}/openings`);
+      setListItems((data.openings || []).map(mapOpeningWithManualInput));
+      setSearchQuery("");
+      setSearchResults([]);
+    } catch (error) {
+      showNotice(error.message || "Could not load list", "error");
     }
   }
 
   async function handleDeleteList(listId) {
     if (!identity || !listId) return;
 
-    const list = myCustomLists.find((item) => item.id === listId);
+    const list = [...myMalLists, ...myYoutubeLists].find((item) => item.id === listId);
     setConfirmDialog({
       open: true,
       title: "Delete list?",
@@ -270,8 +329,35 @@ export default function CreateListPage() {
     }
   }
 
-  async function handleSaveList() {
-    if (!identity || !canSave) return;
+  function applyManualVideoLink(index) {
+    if (editingSource === "youtube") return;
+
+    const item = listItems[index];
+    if (!item) return;
+
+    const normalizedId = extractYoutubeVideoId(item.manual_video_input || "");
+    if (!normalizedId) {
+      showNotice("Invalid YouTube link or video ID", "error");
+      return;
+    }
+
+    setListItems((prev) =>
+      prev.map((entry, i) => {
+        if (i !== index) return entry;
+        return {
+          ...entry,
+          youtube_video_id: normalizedId,
+          manual_video_input: normalizedId,
+          thumbnail_url: entry.thumbnail_url || `https://i.ytimg.com/vi/${normalizedId}/mqdefault.jpg`,
+        };
+      }),
+    );
+
+    showNotice("YouTube link updated", "success");
+  }
+
+  async function handleSaveMalList() {
+    if (!identity || !canSaveMal) return;
 
     setSaving(true);
     try {
@@ -287,10 +373,12 @@ export default function CreateListPage() {
         listId: editingListId || undefined,
         name: listName.trim(),
         isPreset: false,
+        source: "mal",
         openings: payload,
       });
 
-      navigate("/");
+      await loadMyLists();
+      showNotice("MAL list saved.", "success");
     } catch (error) {
       showNotice(error.message || "Could not save list", "error");
     } finally {
@@ -335,7 +423,7 @@ export default function CreateListPage() {
 
       <header className="flex flex-wrap items-center justify-between gap-6 mb-12">
         <div className="flex items-center gap-4">
-          <button 
+          <button
             className="p-2 hover:bg-slate-800 rounded-lg transition-colors"
             onClick={() => navigate("/")}
           >
@@ -343,286 +431,113 @@ export default function CreateListPage() {
           </button>
           <div>
             <h1 className="text-3xl font-bold">Create Custom List</h1>
-            <p className="text-slate-400">Build your perfect anime opening collection.</p>
+            <p className="text-slate-400">Load playlists and edit lists from one panel.</p>
           </div>
         </div>
-        <button 
+        <button
           className="btn-primary flex items-center gap-2"
-          onClick={handleSaveList} 
-          disabled={!canSave || saving}
+          onClick={handleSaveMalList}
+          disabled={!canSaveMal || saving}
+          title={editingSource === "youtube" ? "YouTube lists are read-only here" : "Save MAL list"}
         >
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          {editingListId ? "Update List" : "Save List"}
+          {editingSource === "youtube"
+            ? "Read-only"
+            : editingListId
+              ? "Update MAL List"
+              : "Save MAL List"}
         </button>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Left Column: Tools & Search */}
-        <div className="lg:col-span-8 space-y-8">
-          {/* Quick Builder */}
+        <div className="lg:col-span-5 space-y-8">
           <section className="card">
             <div className="flex items-center gap-2 mb-6">
-              <Zap className="w-5 h-5 text-brand-400" />
-              <h3 className="text-lg font-bold">Quick Builder</h3>
-              <span className="pill text-[10px]">Auto-generate</span>
+              <ListVideo className="w-5 h-5 text-brand-400" />
+              <h3 className="text-lg font-bold">Load YouTube Playlist</h3>
+              <span className="pill text-[10px]">Create YouTube list</span>
             </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
               <div className="space-y-2">
-                <label className="text-xs text-slate-500 uppercase font-bold tracking-wider">List Name</label>
+                <label className="text-xs text-slate-500 uppercase font-bold tracking-wider">Playlist URL</label>
                 <input
-                  value={quickListName}
-                  onChange={(e) => setQuickListName(e.target.value)}
-                  placeholder="e.g. Best of 2024"
+                  value={playlistUrl}
+                  onChange={(e) => setPlaylistUrl(e.target.value)}
+                  placeholder="https://www.youtube.com/playlist?list=..."
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-xs text-slate-500 uppercase font-bold tracking-wider">Number of Openings</label>
-                <div className="flex gap-2">
-                  <input
-                    type="number"
-                    min={1}
-                    max={YOUTUBE_POPULAR_LIST_MAX}
-                    value={quickCount}
-                    onChange={(e) => setQuickCount(Math.max(1, Math.min(YOUTUBE_POPULAR_LIST_MAX, Number(e.target.value) || 1)))}
-                  />
-                  <button 
-                    className="btn-secondary whitespace-nowrap"
-                    onClick={() => setQuickCount(YOUTUBE_POPULAR_LIST_MAX)}
-                  >
-                    Max ({YOUTUBE_POPULAR_LIST_MAX})
-                  </button>
-                </div>
+                <label className="text-xs text-slate-500 uppercase font-bold tracking-wider">List Name (optional)</label>
+                <input
+                  value={playlistListName}
+                  onChange={(e) => setPlaylistListName(e.target.value)}
+                  placeholder="Use playlist title if empty"
+                />
               </div>
             </div>
-            
-            <button 
+
+            <button
               className="btn-secondary w-full flex items-center justify-center gap-2"
-              onClick={generatePopularListQuickly}
-              disabled={isGeneratingQuickList}
+              onClick={importYoutubePlaylistList}
+              disabled={isImportingPlaylist || !playlistUrl.trim()}
             >
-              {isGeneratingQuickList ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-              Generate Popular List
+              {isImportingPlaylist ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
+              Load Playlist
             </button>
           </section>
 
-          {/* Manual Search */}
           <section className="card">
-            <div className="flex items-center gap-2 mb-6">
-              <Search className="w-5 h-5 text-brand-400" />
-              <h3 className="text-lg font-bold">Manual Search</h3>
-            </div>
-
-            <div className="relative mb-6">
-              <input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && searchAnime()}
-                placeholder="Search anime title (e.g. Jujutsu Kaisen)..."
-                className="pl-12 h-12"
-              />
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
-              <button 
-                className="absolute right-2 top-1/2 -translate-y-1/2 btn-primary !py-1.5 !px-4 text-sm"
-                onClick={searchAnime}
-                disabled={isSearching}
-              >
-                {isSearching ? "..." : "Search"}
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[300px] overflow-y-auto pr-2 scrollbar-thin">
-              {searchResults.map((anime) => (
-                <button
-                  key={anime.mal_id}
-                  className="flex items-center gap-3 p-2 rounded-xl bg-slate-800/30 border border-slate-800 hover:border-brand-500/50 transition-all text-left group"
-                  onClick={() => selectAnime(anime)}
-                >
-                  <img
-                    src={anime.images?.jpg?.small_image_url || ""}
-                    alt=""
-                    className="w-12 h-12 rounded-lg object-cover"
-                    referrerPolicy="no-referrer"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold truncate group-hover:text-brand-400 transition-colors">
-                      {anime.title_english || anime.title}
-                    </p>
-                    <p className="text-[10px] text-slate-500 uppercase">{anime.type || 'TV'}</p>
-                  </div>
-                  <Plus className="w-4 h-4 text-slate-700 group-hover:text-brand-400" />
-                </button>
-              ))}
-            </div>
-
-            <AnimatePresence mode="wait">
-              {selectedAnime && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 10 }}
-                  className="mt-8 pt-8 border-t border-slate-800"
-                >
-                  <div className="flex items-center gap-4 mb-6">
-                    <img 
-                      src={selectedAnime.images?.jpg?.image_url} 
-                      className="w-16 h-24 rounded-lg object-cover shadow-xl" 
-                      alt=""
-                      referrerPolicy="no-referrer"
-                    />
-                    <div>
-                      <h4 className="text-xl font-bold">{selectedAnime.title_english || selectedAnime.title}</h4>
-                      <p className="text-sm text-slate-400">Select an opening to find on YouTube</p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2 mb-8">
-                    {animeOpenings.map((op) => (
-                      <button 
-                        key={op} 
-                        className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-                          currentOpeningToAttach === op 
-                            ? 'bg-brand-500 text-white shadow-lg shadow-brand-500/20' 
-                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                        }`}
-                        onClick={() => searchYouTube(op)}
-                      >
-                        {op}
-                      </button>
-                    ))}
-                  </div>
-
-                  {isYtSearching && (
-                    <div className="flex items-center gap-3 text-slate-400 text-sm py-4">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Searching YouTube for "{currentOpeningToAttach}"...
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {ytResults.map((video) => (
-                      <button
-                        key={video.id.videoId}
-                        className="flex flex-col p-3 rounded-xl bg-slate-900 border border-slate-800 hover:border-brand-500/50 transition-all text-left group"
-                        onClick={() => addToList(video)}
-                      >
-                        <div className="flex items-start gap-3 mb-2">
-                          <div className="relative flex-shrink-0">
-                            <img 
-                              src={video.snippet.thumbnails?.medium?.url} 
-                              className="w-24 h-14 rounded-lg object-cover" 
-                              alt="" 
-                            />
-                            <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-lg">
-                              <Play className="w-6 h-6 text-white" />
-                            </div>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-bold line-clamp-2 group-hover:text-brand-400 transition-colors">
-                              {video.snippet.title}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between mt-auto">
-                          <span className="text-[10px] text-slate-500 truncate max-w-[150px]">
-                            {video.snippet.channelTitle}
-                          </span>
-                          {video.durationText && (
-                            <span className="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-300">
-                              {video.durationText}
-                            </span>
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </section>
-        </div>
-
-        {/* Right Column: Preview & My Lists */}
-        <div className="lg:col-span-4 space-y-8">
-          <section className="card flex flex-col h-[600px]">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-bold flex items-center gap-2">
-                <Layout className="w-5 h-5 text-brand-400" />
-                List Preview
-              </h3>
-              <span className="pill text-[10px]">{listItems.length} items</span>
-            </div>
-
-            <div className="mb-4">
-              <input
-                value={listName}
-                onChange={(e) => setListName(e.target.value)}
-                placeholder="Name your list..."
-                className="font-bold text-lg border-none bg-slate-800/50 focus:ring-0"
-              />
-            </div>
-
-            <div className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin">
-              {listItems.length === 0 ? (
-                <div className="empty-state h-full flex flex-col items-center justify-center">
-                  <Music className="w-12 h-12 text-slate-800 mb-4" />
-                  <p className="text-sm">Your list is empty.</p>
-                  <p className="text-xs text-slate-600 mt-1">Add openings to get started.</p>
-                </div>
-              ) : (
-                listItems.map((item, idx) => (
-                  <motion.div 
-                    layout
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    key={`${item.anime_id}-${idx}`} 
-                    className="flex items-center gap-3 p-3 rounded-xl bg-slate-800/30 border border-slate-800 group"
-                  >
-                    <div className="relative w-12 h-12 flex-shrink-0">
-                      <img
-                        src={item.thumbnail_url || ""}
-                        alt=""
-                        className="w-full h-full object-cover rounded-lg"
-                        referrerPolicy="no-referrer"
-                      />
-                      <div className="absolute -top-1 -left-1 w-5 h-5 bg-slate-900 border border-slate-700 rounded-full flex items-center justify-center text-[10px] font-bold">
-                        {idx + 1}
-                      </div>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-bold truncate">{item.anime_title}</p>
-                      <p className="text-[10px] text-slate-500">{item.opening_label}</p>
-                    </div>
-                    <button
-                      className="p-2 text-slate-600 hover:text-red-400 transition-colors"
-                      onClick={() => setListItems((prev) => prev.filter((_, i) => i !== idx))}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </motion.div>
-                ))
-              )}
-            </div>
-          </section>
-
-          <section className="card">
-            <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
-              <Save className="w-5 h-5 text-brand-400" />
-              Your Lists
+            <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+              <Pencil className="w-5 h-5 text-brand-400" />
+              MAL Lists
             </h3>
-            <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 scrollbar-thin">
-              {myCustomLists.length === 0 ? (
-                <p className="text-sm text-slate-500 italic">No custom lists yet.</p>
+            <div className="space-y-2 max-h-[260px] overflow-y-auto pr-2 scrollbar-thin mb-6">
+              {myMalLists.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">No MAL lists yet.</p>
               ) : (
-                myCustomLists.map((list) => (
+                myMalLists.map((list) => (
                   <div key={list.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800 hover:border-slate-700 transition-all group">
                     <span className="text-sm font-medium truncate flex-1 mr-2">{list.name}</span>
                     <div className="flex items-center gap-1">
                       <button
-                        className={`p-2 rounded-lg transition-colors ${editingListId === list.id ? 'bg-brand-500 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
-                        onClick={() => startEditList(list.id)}
+                        className={`p-2 rounded-lg transition-colors ${editingListId === list.id ? "bg-brand-500 text-white" : "text-slate-400 hover:bg-slate-800"}`}
+                        onClick={() => startEditMalList(list.id)}
+                        title="Edit list"
                       >
-                        <Layout className="w-4 h-4" />
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-900/20 rounded-lg transition-colors"
+                        onClick={() => handleDeleteList(list.id)}
+                        disabled={deletingListId === list.id}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+              <ListVideo className="w-5 h-5 text-brand-400" />
+              YouTube Lists (Your playlists)
+            </h3>
+            <div className="space-y-2 max-h-[260px] overflow-y-auto pr-2 scrollbar-thin">
+              {myYoutubeLists.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">No YouTube lists yet.</p>
+              ) : (
+                myYoutubeLists.map((list) => (
+                  <div key={list.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800 hover:border-slate-700 transition-all group">
+                    <span className="text-sm font-medium truncate flex-1 mr-2">{list.name}</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        className={`p-2 rounded-lg transition-colors ${editingListId === list.id ? "bg-brand-500 text-white" : "text-slate-400 hover:bg-slate-800"}`}
+                        onClick={() => startViewYoutubeList(list.id)}
+                        title="Edit list"
+                      >
+                        <Pencil className="w-4 h-4" />
                       </button>
                       <button
                         className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-900/20 rounded-lg transition-colors"
@@ -637,6 +552,169 @@ export default function CreateListPage() {
               )}
             </div>
           </section>
+        </div>
+
+        <div className="lg:col-span-7 space-y-8">
+          {editingListId ? (
+            <>
+              {editingSource !== "youtube" ? (
+                <section className="card">
+                  <div className="flex items-center gap-2 mb-6">
+                    <Plus className="w-5 h-5 text-brand-400" />
+                    <h3 className="text-lg font-bold">Add Anime To MAL List</h3>
+                  </div>
+
+                  <div className="relative mb-6">
+                    <input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && searchAnimeForMalList()}
+                      placeholder="Search anime title (Jikan)"
+                      className="pl-12 h-12"
+                    />
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                    <button
+                      className="absolute right-2 top-1/2 -translate-y-1/2 btn-primary !py-1.5 !px-4 text-sm"
+                      onClick={searchAnimeForMalList}
+                      disabled={isSearching}
+                    >
+                      {isSearching ? "..." : "Search"}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[420px] overflow-y-auto pr-2 scrollbar-thin">
+                    {searchResults.map((anime) => {
+                      const animeId = String(anime.mal_id || "");
+                      const isAdding = addingAnimeId === animeId;
+
+                      return (
+                        <div
+                          key={animeId}
+                          className="flex items-center gap-3 p-3 rounded-xl bg-slate-800/30 border border-slate-800"
+                        >
+                          <img
+                            src={anime.images?.jpg?.small_image_url || ""}
+                            alt=""
+                            className="w-12 h-12 rounded-lg object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-bold truncate">{anime.title_english || anime.title}</p>
+                            <p className="text-[10px] text-slate-500 uppercase">{anime.type || "TV"}</p>
+                          </div>
+                          <button
+                            className="btn-secondary !px-3 !py-2 text-xs"
+                            onClick={() => addAnimeToMalList(anime)}
+                            disabled={isAdding}
+                          >
+                            {isAdding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Add"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : null}
+
+              <section className="card flex flex-col h-[700px]">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-bold flex items-center gap-2">
+                    <Layout className="w-5 h-5 text-brand-400" />
+                    List Preview
+                  </h3>
+                  <span className="pill text-[10px]">{listItems.length} items</span>
+                </div>
+
+                <div className="mb-4">
+                  <input
+                    value={listName}
+                    onChange={(e) => setListName(e.target.value)}
+                    placeholder="Name your list..."
+                    disabled={editingSource === "youtube"}
+                    className="font-bold text-lg border-none bg-slate-800/50 focus:ring-0"
+                  />
+                </div>
+
+                <div className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin">
+                  {listItems.length === 0 ? (
+                    <div className="empty-state h-full flex flex-col items-center justify-center">
+                      <Music className="w-12 h-12 text-slate-800 mb-4" />
+                      <p className="text-sm">This list is empty.</p>
+                      <p className="text-xs text-slate-600 mt-1">Add anime to a MAL list or load a YouTube playlist.</p>
+                    </div>
+                  ) : (
+                    listItems.map((item, idx) => (
+                      <motion.div
+                        layout
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        key={`${item.anime_id}-${idx}`}
+                        className="rounded-xl bg-slate-800/30 border border-slate-800 group p-3"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="relative w-12 h-12 flex-shrink-0">
+                            <img
+                              src={item.thumbnail_url || ""}
+                              alt=""
+                              className="w-full h-full object-cover rounded-lg"
+                              referrerPolicy="no-referrer"
+                            />
+                            <div className="absolute -top-1 -left-1 w-5 h-5 bg-slate-900 border border-slate-700 rounded-full flex items-center justify-center text-[10px] font-bold">
+                              {idx + 1}
+                            </div>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-bold truncate">{item.anime_title}</p>
+                            <p className="text-[10px] text-slate-500 truncate">{item.opening_label}</p>
+                          </div>
+                          <button
+                            className="p-2 text-slate-600 hover:text-red-400 transition-colors"
+                            onClick={() => setListItems((prev) => prev.filter((_, i) => i !== idx))}
+                            disabled={editingSource === "youtube"}
+                            title={editingSource === "youtube" ? "Read-only" : "Remove"}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        {editingSource !== "youtube" ? (
+                          <div className="mt-3 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
+                            <input
+                              value={item.manual_video_input || ""}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setListItems((prev) =>
+                                  prev.map((entry, i) => (i === idx ? { ...entry, manual_video_input: value } : entry)),
+                                );
+                              }}
+                              placeholder="Paste YouTube link or video ID later"
+                              className="text-xs"
+                            />
+                            <button
+                              className="btn-secondary !px-3 !py-2 text-xs"
+                              onClick={() => applyManualVideoLink(idx)}
+                            >
+                              Apply Link
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-[11px] text-slate-500">Video ID: {item.youtube_video_id || "none"}</p>
+                        )}
+                      </motion.div>
+                    ))
+                  )}
+                </div>
+              </section>
+            </>
+          ) : (
+            <section className="card h-full min-h-[420px] flex items-center justify-center">
+              <div className="text-center">
+                <Layout className="w-10 h-10 text-slate-600 mx-auto mb-3" />
+                <p className="text-slate-300 font-medium">Select a list to edit</p>
+                <p className="text-slate-500 text-sm mt-1">Use the edit button in MAL or YouTube lists.</p>
+              </div>
+            </section>
+          )}
         </div>
       </div>
 

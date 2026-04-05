@@ -12,6 +12,7 @@ import {
   buildMalTopOpeningsDataset,
   buildPresetTopOpenings,
   getAnimeThemes,
+  importYoutubePlaylist,
   getTopAnime,
   searchAnime,
   searchYoutube,
@@ -56,6 +57,7 @@ const SaveListSchema = z.object({
   listId: z.string().uuid().optional(),
   name: z.string().trim().min(1).max(120),
   isPreset: z.boolean().optional().default(false),
+  source: z.enum(["mal", "youtube"]).optional().default("mal"),
   openings: z.array(
     z.object({
       anime_id: z.number().int().positive(),
@@ -65,6 +67,12 @@ const SaveListSchema = z.object({
       thumbnail_url: z.string().trim().max(600).nullable().optional(),
     }),
   ).min(1),
+});
+
+const ImportYoutubePlaylistSchema = z.object({
+  playlistUrl: z.string().trim().min(1).max(800),
+  listName: z.string().trim().min(1).max(120).optional(),
+  limit: z.number().int().min(1).max(300).optional(),
 });
 
 function logEvent(level, event, details = {}) {
@@ -721,12 +729,18 @@ app.get("/api/lists", async (req, res) => {
   const auth = await requireAuth(req, res);
   if (!auth) return;
 
-  const { data, error } = await supabaseAdmin
+  let query = supabaseAdmin
     .from("lists")
-    .select("id,name,is_preset,created_at,created_by")
-    .or(`is_preset.eq.true,created_by.eq.${auth.user.id}`)
-    .order("created_at", { ascending: false })
-    .limit(200);
+    .select("id,name,is_preset,list_source,created_at,created_by")
+    .order("created_at", { ascending: false });
+
+  if (auth.user.role === "admin") {
+    query = query.limit(500);
+  } else {
+    query = query.or(`is_preset.eq.true,created_by.eq.${auth.user.id}`).limit(200);
+  }
+
+  const { data, error } = await query;
 
   if (error) return internalError(req, res, error, "lists_fetch_failed");
   return res.json({ lists: data || [] });
@@ -780,6 +794,7 @@ app.post("/api/lists/save", async (req, res) => {
           name: input.name,
           created_by: auth.user.id,
           is_preset: Boolean(input.isPreset),
+          list_source: input.source,
         })
         .select("id")
         .single();
@@ -801,7 +816,7 @@ app.post("/api/lists/save", async (req, res) => {
 
       const { error: renameError } = await supabaseAdmin
         .from("lists")
-        .update({ name: input.name, is_preset: Boolean(input.isPreset) })
+        .update({ name: input.name, is_preset: Boolean(input.isPreset), list_source: input.source })
         .eq("id", listId);
 
       if (renameError) return internalError(req, res, renameError, "list_update_failed");
@@ -830,6 +845,64 @@ app.post("/api/lists/save", async (req, res) => {
     return res.status(201).json({ list: { id: listId, name: input.name } });
   } catch (error) {
     return internalError(req, res, error, "list_save_failed");
+  }
+});
+
+app.post("/api/lists/import-youtube-playlist", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const input = parseSchema(ImportYoutubePlaylistSchema, req.body || {}, res, "Invalid playlist payload");
+  if (!input) return;
+
+  try {
+    const imported = await importYoutubePlaylist(input.playlistUrl, input.limit || 150);
+    if (!imported.items?.length) {
+      return res.status(400).json({ error: "Playlist has no public videos to import" });
+    }
+
+    const finalName =
+      String(input.listName || "").trim() ||
+      imported.playlistTitle ||
+      "YouTube Playlist";
+
+    const { data: createdList, error: listError } = await supabaseAdmin
+      .from("lists")
+      .insert({
+        name: finalName,
+        created_by: auth.user.id,
+        is_preset: false,
+        list_source: "youtube",
+      })
+      .select("id,name")
+      .single();
+
+    if (listError) return internalError(req, res, listError, "youtube_playlist_list_create_failed");
+
+    const rows = imported.items.map((item, index) => ({
+      list_id: createdList.id,
+      anime_id: index + 1,
+      anime_title: item.title,
+      opening_label: item.channelTitle || "YouTube",
+      youtube_video_id: item.videoId,
+      thumbnail_url: item.thumbnailUrl || null,
+      order_index: index,
+    }));
+
+    const { error: insertError } = await supabaseAdmin.from("list_openings").insert(rows);
+    if (insertError) return internalError(req, res, insertError, "youtube_playlist_openings_insert_failed");
+
+    return res.status(201).json({
+      list: {
+        id: createdList.id,
+        name: createdList.name,
+        source: "youtube",
+        count: rows.length,
+      },
+    });
+  } catch (error) {
+    return internalError(req, res, error, "youtube_playlist_import_failed");
   }
 });
 

@@ -3,6 +3,8 @@ import { cache } from "./cache.js";
 const JIKAN_BASE = "https://api.jikan.moe/v4";
 const YOUTUBE_BASE = "https://www.googleapis.com/youtube/v3/search";
 const YOUTUBE_VIDEOS_BASE = "https://www.googleapis.com/youtube/v3/videos";
+const YOUTUBE_PLAYLIST_ITEMS_BASE = "https://www.googleapis.com/youtube/v3/playlistItems";
+const YOUTUBE_PLAYLISTS_BASE = "https://www.googleapis.com/youtube/v3/playlists";
 const PREFERRED_CHANNELS = [
   "crunchyroll",
   "aniplex",
@@ -51,6 +53,23 @@ function delay(ms = 0) {
   return new Promise((resolve) => {
     setTimeout(resolve, safeMs);
   });
+}
+
+function extractYoutubePlaylistId(input = "") {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+
+  if (/^[a-zA-Z0-9_-]{10,60}$/.test(raw) && raw.startsWith("PL")) {
+    return raw;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const list = parsed.searchParams.get("list");
+    return String(list || "").trim();
+  } catch {
+    return "";
+  }
 }
 
 export async function getTopAnime(limit = 25, source = "score") {
@@ -283,6 +302,78 @@ export async function buildPresetTopOpenings(limit = 20, source = "score") {
   }
 
   return openings;
+}
+
+export async function importYoutubePlaylist(playlistInput, limit = 150) {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) {
+    throw new Error("YOUTUBE_API_KEY missing");
+  }
+
+  const playlistId = extractYoutubePlaylistId(playlistInput);
+  if (!playlistId) {
+    throw new Error("Invalid YouTube playlist URL");
+  }
+
+  const safeLimit = Math.max(1, Math.min(300, Number(limit) || 150));
+  const encodedPlaylistId = encodeURIComponent(playlistId);
+  const playlistMetaUrl = `${YOUTUBE_PLAYLISTS_BASE}?part=snippet&id=${encodedPlaylistId}&maxResults=1&key=${apiKey}`;
+  const playlistMeta = await fetchJson(playlistMetaUrl);
+  const playlistTitle = String(playlistMeta?.items?.[0]?.snippet?.title || "").trim();
+
+  const items = [];
+  let nextPageToken = "";
+
+  while (items.length < safeLimit) {
+    const remaining = safeLimit - items.length;
+    const pageSize = Math.min(50, remaining);
+    const pageTokenParam = nextPageToken ? `&pageToken=${encodeURIComponent(nextPageToken)}` : "";
+    const pageUrl = `${YOUTUBE_PLAYLIST_ITEMS_BASE}?part=snippet&playlistId=${encodedPlaylistId}&maxResults=${pageSize}${pageTokenParam}&key=${apiKey}`;
+    const page = await fetchJson(pageUrl);
+    const pageItems = page?.items || [];
+
+    for (const item of pageItems) {
+      const snippet = item?.snippet || {};
+      const resource = snippet?.resourceId || {};
+      const videoId = String(resource?.videoId || "").trim();
+      if (!videoId) continue;
+
+      const title = String(snippet?.title || "").trim();
+      if (!title || title.toLowerCase() === "private video" || title.toLowerCase() === "deleted video") {
+        continue;
+      }
+
+      items.push({
+        videoId,
+        title,
+        channelTitle: String(snippet?.videoOwnerChannelTitle || snippet?.channelTitle || "").trim(),
+        thumbnailUrl:
+          snippet?.thumbnails?.medium?.url ||
+          snippet?.thumbnails?.high?.url ||
+          snippet?.thumbnails?.default?.url ||
+          "",
+      });
+
+      if (items.length >= safeLimit) break;
+    }
+
+    nextPageToken = String(page?.nextPageToken || "").trim();
+    if (!nextPageToken || pageItems.length === 0) break;
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  for (const item of items) {
+    if (seen.has(item.videoId)) continue;
+    seen.add(item.videoId);
+    deduped.push(item);
+  }
+
+  return {
+    playlistId,
+    playlistTitle,
+    items: deduped,
+  };
 }
 
 export async function buildMalTopOpeningsDataset(options = {}) {
