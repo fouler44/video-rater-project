@@ -329,6 +329,20 @@ export default function RoomPage() {
 
   const connectedCount = connectedParticipants.length;
 
+  const openingAverage = useMemo(() => {
+    const totalVotes = currentOpeningVotes.length;
+    if (!totalVotes) {
+      return { value: 0, count: 0, hasVotes: false };
+    }
+
+    const totalScore = currentOpeningVotes.reduce((sum, row) => sum + Number(row.score || 0), 0);
+    return {
+      value: totalScore / totalVotes,
+      count: totalVotes,
+      hasVotes: true,
+    };
+  }, [currentOpeningVotes]);
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       setTickNow(Date.now());
@@ -1285,6 +1299,13 @@ export default function RoomPage() {
     if (!isHost || !room || openings.length <= 1) return;
 
     setActionLoading(true);
+    setRoom((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        current_opening_index: -1,
+      };
+    });
     sendPartyEvent("queue:shuffle", {});
   }
 
@@ -1653,6 +1674,18 @@ export default function RoomPage() {
         <div className="lg:col-span-3 flex flex-col gap-6 min-h-0">
           <div className="card flex-1 flex flex-col min-h-0 p-0 overflow-hidden">
             <div className="flex-1 overflow-y-auto p-6 scrollbar-thin space-y-6">
+              <div className="rounded-2xl border border-brand-500/25 bg-brand-500/10 px-4 py-3">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-brand-200/80 font-bold">Global opening avg</p>
+                <div className="mt-1 flex items-end justify-between gap-3">
+                  <p className="text-2xl font-black text-brand-200 tabular-nums">
+                    {openingAverage.hasVotes ? openingAverage.value.toFixed(2) : "-"}
+                  </p>
+                  <p className="text-[11px] text-brand-100/80 uppercase tracking-wider font-semibold">
+                    {openingAverage.count} rating{openingAverage.count === 1 ? "" : "s"}
+                  </p>
+                </div>
+              </div>
+
               <div className="space-y-3">
                 {mergedParticipants.map((participant) => {
                   const isActive = activeUserSet.has(participant.user_uuid);

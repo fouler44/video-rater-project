@@ -88,7 +88,7 @@ const HOST_ONLY_TYPES = new Set(["player:state", "player:sync", "opening:next", 
 const DEFAULT_GRACE_MS = 2500;
 
 const PlayerStateSchema = z.object({
-  openingIndex: z.number().int().min(0).optional(),
+  openingIndex: z.number().int().min(-1).optional(),
   videoId: z.string().trim().max(30).optional(),
   timestamp: z.number().min(0).optional(),
   isPlaying: z.boolean().optional(),
@@ -527,17 +527,15 @@ export default class AnimeRoomParty implements Party.Server {
       }
 
       const currentOpening = this.openingsByIndex.get(this.currentOpeningIndex) || null;
-      if (!this.playerState || this.roomStatus === "waiting") {
-        this.playerState = {
-          openingIndex: this.currentOpeningIndex,
-          videoId: sanitizeText(currentOpening?.youtube_video_id),
-          timestamp: 0,
-          isPlaying: false,
-          updatedAt: Date.now(),
-          sourceUserUuid: actorUserUuid,
-          reason: "queue-shuffle",
-        };
-      }
+      this.playerState = {
+        openingIndex: this.currentOpeningIndex,
+        videoId: sanitizeText(currentOpening?.youtube_video_id),
+        timestamp: 0,
+        isPlaying: false,
+        updatedAt: Date.now(),
+        sourceUserUuid: actorUserUuid,
+        reason: "queue-shuffle",
+      };
 
       this.party.broadcast(
         JSON.stringify({

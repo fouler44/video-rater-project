@@ -396,7 +396,7 @@ async function fetchRoomParticipants(roomId) {
 async function fetchListOpenings(listId) {
   const { data, error } = await supabaseAdmin
     .from("list_openings")
-    .select("id,order_index,youtube_video_id,anime_title,opening_label")
+    .select("id,list_id,anime_id,anime_title,opening_label,youtube_video_id,thumbnail_url,order_index")
     .eq("list_id", listId)
     .order("order_index", { ascending: true });
 
@@ -1348,26 +1348,37 @@ app.post("/api/internal/rooms/:roomId/shuffle", async (req, res) => {
       });
     }
 
-    const currentIndex = Math.max(0, Math.min(Number(room.current_opening_index || 0), openings.length - 1));
-    const fixedCount = room.status === "waiting" ? 0 : currentIndex + 1;
-    const fixedOpenings = openings.slice(0, fixedCount);
-    const shuffledOpenings = shuffleArray(openings.slice(fixedCount));
-    const reorderedOpenings = [...fixedOpenings, ...shuffledOpenings];
+    const shuffledOpenings = shuffleArray(openings);
+    const reorderedOpenings = shuffledOpenings;
+    const previousOrderById = new Map(openings.map((opening) => [opening.id, Number(opening.order_index)]));
 
-    const orderUpdates = reorderedOpenings.map((opening, index) => ({
-      id: opening.id,
-      order_index: index,
-    }));
+    const orderUpdates = reorderedOpenings
+      .map((opening, index) => ({
+        id: opening.id,
+        list_id: opening.list_id,
+        anime_id: opening.anime_id,
+        anime_title: opening.anime_title,
+        opening_label: opening.opening_label,
+        youtube_video_id: opening.youtube_video_id || null,
+        thumbnail_url: opening.thumbnail_url || null,
+        order_index: index,
+      }))
+      .filter((row) => {
+        const previousOrder = previousOrderById.get(row.id);
+        return previousOrder !== row.order_index;
+      });
 
-    // Updating hundreds of rows one-by-one is slow; apply order changes in chunks.
-    for (let start = 0; start < orderUpdates.length; start += BULK_INSERT_CHUNK_SIZE) {
-      const chunk = orderUpdates.slice(start, start + BULK_INSERT_CHUNK_SIZE);
-      const { error: updateError } = await supabaseAdmin
-        .from("list_openings")
-        .upsert(chunk, { onConflict: "id" });
+    // Avoid unnecessary writes when some positions already match after shuffle.
+    if (orderUpdates.length > 0) {
+      for (let start = 0; start < orderUpdates.length; start += BULK_INSERT_CHUNK_SIZE) {
+        const chunk = orderUpdates.slice(start, start + BULK_INSERT_CHUNK_SIZE);
+        const { error: updateError } = await supabaseAdmin
+          .from("list_openings")
+          .upsert(chunk, { onConflict: "id" });
 
-      if (updateError) {
-        return res.status(500).json({ error: updateError.message });
+        if (updateError) {
+          return res.status(500).json({ error: updateError.message });
+        }
       }
     }
 
@@ -1376,15 +1387,23 @@ app.post("/api/internal/rooms/:roomId/shuffle", async (req, res) => {
       order_index: index,
     }));
 
+    const { data: updatedRoom, error: updateRoomError } = await supabaseAdmin
+      .from("rooms")
+      .update({
+        current_opening_index: -1,
+      })
+      .eq("id", room.id)
+      .select("id,status,current_opening_index,host_uuid")
+      .single();
+
+    if (updateRoomError) {
+      return res.status(500).json({ error: updateRoomError.message });
+    }
+
     return res.json({
-      room: {
-        id: room.id,
-        status: room.status,
-        current_opening_index: currentIndex,
-        host_uuid: room.host_uuid,
-      },
+      room: updatedRoom,
       openings: openingsResponse,
-      currentOpening: openingsResponse[currentIndex] || null,
+      currentOpening: null,
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Could not shuffle queue" });
