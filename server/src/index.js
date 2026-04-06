@@ -407,6 +407,19 @@ async function fetchListOpenings(listId) {
   return data || [];
 }
 
+function shuffleArray(items) {
+  const copy = [...items];
+
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    const current = copy[index];
+    copy[index] = copy[swapIndex];
+    copy[swapIndex] = current;
+  }
+
+  return copy;
+}
+
 async function upsertRoomMembership(roomId, user) {
   const payload = {
     room_id: roomId,
@@ -1286,6 +1299,91 @@ app.post("/api/internal/rooms/:roomId/advance", async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Could not advance opening" });
+  }
+});
+
+app.post("/api/internal/rooms/:roomId/shuffle", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  if (!ensureInternalPartykit(req, res)) return;
+
+  const roomId = String(req.params.roomId || "").trim();
+  const actorUserUuid = String(req.body?.actorUserUuid || "").trim();
+
+  if (!roomId || !actorUserUuid) {
+    return res.status(400).json({ error: "Missing roomId or actorUserUuid" });
+  }
+
+  const { data: room, error: roomError } = await supabaseAdmin
+    .from("rooms")
+    .select("id,list_id,current_opening_index,status,host_uuid,owner_user_id")
+    .eq("id", roomId)
+    .maybeSingle();
+
+  if (roomError) return res.status(500).json({ error: roomError.message });
+  if (!room) return res.status(404).json({ error: "Room not found" });
+  if (room.status === "finished") {
+    return res.status(409).json({ error: "Finished rooms cannot be shuffled" });
+  }
+
+  const canAct =
+    String(room.host_uuid || "") === actorUserUuid ||
+    String(room.owner_user_id || "") === actorUserUuid;
+
+  if (!canAct) {
+    return res.status(403).json({ error: "Only host or owner can shuffle openings" });
+  }
+
+  try {
+    const openings = await fetchListOpenings(room.list_id);
+    if (openings.length <= 1) {
+      return res.json({
+        room: {
+          id: room.id,
+          status: room.status,
+          current_opening_index: Number(room.current_opening_index || 0),
+          host_uuid: room.host_uuid,
+        },
+        openings,
+        currentOpening: openings[0] || null,
+      });
+    }
+
+    const currentIndex = Math.max(0, Math.min(Number(room.current_opening_index || 0), openings.length - 1));
+    const fixedCount = room.status === "waiting" ? 0 : currentIndex + 1;
+    const fixedOpenings = openings.slice(0, fixedCount);
+    const shuffledOpenings = shuffleArray(openings.slice(fixedCount));
+    const reorderedOpenings = [...fixedOpenings, ...shuffledOpenings];
+
+    for (let index = 0; index < reorderedOpenings.length; index += 1) {
+      const opening = reorderedOpenings[index];
+      const { error: updateError } = await supabaseAdmin
+        .from("list_openings")
+        .update({ order_index: index })
+        .eq("id", opening.id)
+        .eq("list_id", room.list_id);
+
+      if (updateError) {
+        return res.status(500).json({ error: updateError.message });
+      }
+    }
+
+    const openingsResponse = reorderedOpenings.map((opening, index) => ({
+      ...opening,
+      order_index: index,
+    }));
+
+    return res.json({
+      room: {
+        id: room.id,
+        status: room.status,
+        current_opening_index: currentIndex,
+        host_uuid: room.host_uuid,
+      },
+      openings: openingsResponse,
+      currentOpening: openingsResponse[currentIndex] || null,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Could not shuffle queue" });
   }
 });
 
