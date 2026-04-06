@@ -1354,13 +1354,17 @@ app.post("/api/internal/rooms/:roomId/shuffle", async (req, res) => {
     const shuffledOpenings = shuffleArray(openings.slice(fixedCount));
     const reorderedOpenings = [...fixedOpenings, ...shuffledOpenings];
 
-    for (let index = 0; index < reorderedOpenings.length; index += 1) {
-      const opening = reorderedOpenings[index];
+    const orderUpdates = reorderedOpenings.map((opening, index) => ({
+      id: opening.id,
+      order_index: index,
+    }));
+
+    // Updating hundreds of rows one-by-one is slow; apply order changes in chunks.
+    for (let start = 0; start < orderUpdates.length; start += BULK_INSERT_CHUNK_SIZE) {
+      const chunk = orderUpdates.slice(start, start + BULK_INSERT_CHUNK_SIZE);
       const { error: updateError } = await supabaseAdmin
         .from("list_openings")
-        .update({ order_index: index })
-        .eq("id", opening.id)
-        .eq("list_id", room.list_id);
+        .upsert(chunk, { onConflict: "id" });
 
       if (updateError) {
         return res.status(500).json({ error: updateError.message });
