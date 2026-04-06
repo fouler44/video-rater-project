@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "partykit dev",
+    "dev": "partykit dev --port 1999",
     "build": "echo \"No build step for PartyKit\""
   },
   "dependencies": {

@@ -918,6 +918,42 @@ export default function RoomPage() {
       return;
     }
 
+    if (type === "queue:shuffled") {
+      setActionLoading(false);
+
+      if (Array.isArray(payload.openings)) {
+        setOpenings(payload.openings);
+      }
+
+      const roomPatch = payload.room || {};
+      const nextStatus = String(roomPatch.status || "");
+      const nextIndex = Number(roomPatch.current_opening_index);
+
+      setRoom((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          status: nextStatus || prev.status,
+          current_opening_index: Number.isInteger(nextIndex)
+            ? nextIndex
+            : prev.current_opening_index,
+          host_uuid: String(roomPatch.host_uuid || prev.host_uuid || ""),
+        };
+      });
+
+      if (roomPatch.host_uuid) {
+        setHostUuid(String(roomPatch.host_uuid));
+      }
+
+      return;
+    }
+
+    if (type === "queue:shuffle:error") {
+      setActionLoading(false);
+      showNotice(String(payload.message || "Could not shuffle queue"), "error");
+      return;
+    }
+
     if (type === "host:changed") {
       const nextHost = String(payload.hostUuid || "");
       setHostUuid(nextHost);
@@ -1243,6 +1279,13 @@ export default function RoomPage() {
     } finally {
       setActionLoading(false);
     }
+  }
+
+  async function handleShuffleQueue() {
+    if (!isHost || !room || openings.length <= 1) return;
+
+    setActionLoading(true);
+    sendPartyEvent("queue:shuffle", {});
   }
 
   function sendOpeningAdvance(targetIndex, finish = false, force = false) {
@@ -1666,11 +1709,19 @@ export default function RoomPage() {
               </div>
 
               <div className="border-t border-slate-800 pt-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Queue</h3>
-                  </div>
-                  <span className="pill text-[8px]">{openings.length} items</span>
+                <div className="flex items-center justify-center gap-3 mb-4">
+                  {isHost && room?.status !== "finished" ? (
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-100 shadow-lg shadow-cyan-500/10 transition-all hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+                      onClick={handleShuffleQueue}
+                      disabled={actionLoading || openings.length <= 1}
+                      title="Shuffle the queue"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${actionLoading ? "animate-spin" : ""}`} />
+                      Shuffle queue
+                    </button>
+                  ) : null}
                 </div>
 
                 <div className="space-y-2 max-h-72 overflow-y-auto pr-1 scrollbar-thin">

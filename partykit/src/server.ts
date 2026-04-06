@@ -58,6 +58,17 @@ type AdvanceResponse = {
   nextOpening: OpeningRow | null;
 };
 
+type ShuffleResponse = {
+  room: {
+    id: string;
+    status: "waiting" | "playing" | "finished";
+    current_opening_index: number;
+    host_uuid: string;
+  };
+  openings: OpeningRow[];
+  currentOpening: OpeningRow | null;
+};
+
 type PlayerState = {
   openingIndex: number;
   videoId: string;
@@ -73,7 +84,7 @@ type Envelope = {
   payload?: any;
 };
 
-const HOST_ONLY_TYPES = new Set(["player:state", "player:sync", "opening:next"]);
+const HOST_ONLY_TYPES = new Set(["player:state", "player:sync", "opening:next", "queue:shuffle"]);
 const DEFAULT_GRACE_MS = 2500;
 
 const PlayerStateSchema = z.object({
@@ -89,6 +100,8 @@ const OpeningNextSchema = z.object({
   force: z.boolean().optional(),
   graceMs: z.number().min(0).max(10_000).optional(),
 });
+
+const QueueShuffleSchema = z.object({});
 
 const RatingSubmittedSchema = z.object({
   openingId: z.string().uuid(),
@@ -340,6 +353,14 @@ export default class AnimeRoomParty implements Party.Server {
       await this.handleOpeningAdvance(parsed.data, senderMember.userUuid);
       return;
     }
+
+    if (envelope.type === "queue:shuffle") {
+      const parsed = QueueShuffleSchema.safeParse(envelope.payload || {});
+      if (!parsed.success) return;
+
+      await this.handleQueueShuffle(senderMember.userUuid);
+      return;
+    }
   }
 
   private buildPlayerStateFromPayload(payload: any, sourceUserUuid: string, reason = "state") {
@@ -475,6 +496,71 @@ export default class AnimeRoomParty implements Party.Server {
         type: "opening:next:error",
         payload: {
           message: String(error?.message || "Could not advance opening"),
+        },
+      });
+    }
+  }
+
+  private async handleQueueShuffle(actorUserUuid: string) {
+    try {
+      await this.ensureHydrated(true);
+
+      const shuffled = await this.fetchInternal<ShuffleResponse>(`/api/internal/rooms/${this.party.id}/shuffle`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          actorUserUuid,
+        }),
+      });
+
+      this.roomStatus = shuffled.room.status;
+      this.currentOpeningIndex = Number(shuffled.room.current_opening_index || 0);
+      if (shuffled.room.host_uuid) {
+        this.hostUuid = shuffled.room.host_uuid;
+      }
+
+      this.openingsByIndex.clear();
+      for (const opening of shuffled.openings || []) {
+        this.openingsByIndex.set(Number(opening.order_index), opening);
+      }
+
+      const currentOpening = this.openingsByIndex.get(this.currentOpeningIndex) || null;
+      if (!this.playerState || this.roomStatus === "waiting") {
+        this.playerState = {
+          openingIndex: this.currentOpeningIndex,
+          videoId: sanitizeText(currentOpening?.youtube_video_id),
+          timestamp: 0,
+          isPlaying: false,
+          updatedAt: Date.now(),
+          sourceUserUuid: actorUserUuid,
+          reason: "queue-shuffle",
+        };
+      }
+
+      this.party.broadcast(
+        JSON.stringify({
+          type: "queue:shuffled",
+          payload: {
+            room: shuffled.room,
+            openings: shuffled.openings,
+            currentOpening: shuffled.currentOpening,
+          },
+        }),
+      );
+
+      this.party.broadcast(
+        JSON.stringify({
+          type: "room:state",
+          payload: this.buildRoomStatePayload(),
+        }),
+      );
+    } catch (error: any) {
+      this.sendToUser(actorUserUuid, {
+        type: "queue:shuffle:error",
+        payload: {
+          message: String(error?.message || "Could not shuffle queue"),
         },
       });
     }

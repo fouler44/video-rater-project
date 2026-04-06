@@ -1,0 +1,51 @@
+- generic [ref=e4]:
+  - banner [ref=e5]:
+    - generic [ref=e6]: Anime Opening Rater
+    - heading "Watch. Rate. Rank." [level=1] [ref=e7]
+    - paragraph [ref=e8]: Create a room, invite your friends, and decide the best anime opening together in real-time.
+  - generic [ref=e9]:
+    - generic [ref=e10]:
+      - generic [ref=e11]:
+        - generic [ref=e12]:
+          - generic [ref=e13]:
+            - img [ref=e14]
+            - heading "Account" [level=3] [ref=e17]
+          - button "Login / Register" [ref=e18]
+        - paragraph [ref=e19]: Only your visible name and avatar are managed here.
+        - generic [ref=e20]:
+          - img "Avatar preview" [ref=e21]
+          - generic [ref=e22]: Your avatar appears in the room and chat.
+        - generic [ref=e23]:
+          - textbox "Display name" [ref=e24]
+          - img [ref=e25]
+        - textbox "Avatar URL (optional)" [ref=e28]
+        - button "Save profile" [disabled]
+      - generic [ref=e29]:
+        - generic [ref=e30]:
+          - img [ref=e31]
+          - heading "Start Session" [level=3] [ref=e32]
+        - generic [ref=e33]:
+          - button "Create New Room" [disabled]:
+            - img
+            - text: Create New Room
+          - button "Create Custom List" [disabled]:
+            - img
+            - text: Create Custom List
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - img [ref=e36]
+          - heading "Join Private Room" [level=3] [ref=e39]
+        - generic [ref=e40]:
+          - textbox "Invite code" [ref=e41]
+          - button "Join" [ref=e42]
+    - generic [ref=e44]:
+      - generic [ref=e45]:
+        - generic [ref=e46]:
+          - img [ref=e47]
+          - heading "Active Public Rooms" [level=3] [ref=e50]
+        - button "Refresh" [ref=e51]:
+          - img [ref=e52]
+          - text: Refresh
+      - generic [ref=e57]:
+        - img [ref=e58]
+        - paragraph [ref=e61]: No public rooms active. Be the first to create one!
