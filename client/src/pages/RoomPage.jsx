@@ -130,9 +130,11 @@ export default function RoomPage() {
   const [tickNow, setTickNow] = useState(Date.now());
 
   const [playerReady, setPlayerReady] = useState(false);
+  const [desiredVideoVersion, setDesiredVideoVersion] = useState(0);
   const [playerIsPlaying, setPlayerIsPlaying] = useState(false);
   const [playerVolume, setPlayerVolume] = useState(80);
   const [playerMuted, setPlayerMuted] = useState(false);
+  const [volumePanelOpen, setVolumePanelOpen] = useState(false);
   const [playerError, setPlayerError] = useState("");
   const [uiNotice, setUiNotice] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState({
@@ -159,6 +161,7 @@ export default function RoomPage() {
   const playerRef = useRef(null);
   const playerContainerRef = useRef(null);
   const currentVideoIdRef = useRef("");
+  const desiredVideoRef = useRef(null);
   const confirmResolverRef = useRef(null);
   const nativeControlsRef = useRef(false);
 
@@ -218,15 +221,68 @@ export default function RoomPage() {
     return Boolean(player && typeof player.getPlayerState === "function");
   }
 
-  function safeLoadVideoById(videoId, startSeconds = 0) {
+  function safeLoadVideoById(videoId, startSeconds = 0, { autoplay = true, trackDesired = true } = {}) {
     const player = playerRef.current;
     const normalizedVideoId = String(videoId || "").trim();
-    if (!normalizedVideoId) return false;
-    if (!isPlayerApiReady(player)) return false;
+    const normalizedStartSeconds = Math.max(0, Number(startSeconds) || 0);
+    const normalizedAutoplay = Boolean(autoplay);
 
-    player.loadVideoById?.(normalizedVideoId, Math.max(0, Number(startSeconds) || 0));
+    if (!normalizedVideoId) {
+      if (trackDesired) {
+        desiredVideoRef.current = null;
+        setDesiredVideoVersion((value) => value + 1);
+      }
+      return false;
+    }
+
+    console.log("[RoomPlayer] safeLoadVideoById called:", normalizedVideoId);
+
+    if (trackDesired) {
+      desiredVideoRef.current = {
+        videoId: normalizedVideoId,
+        startSeconds: normalizedStartSeconds,
+        autoplay: normalizedAutoplay,
+      };
+      setDesiredVideoVersion((value) => value + 1);
+    }
+
+    if (!isPlayerApiReady(player) || !playerReadyRef.current) {
+      console.log("[RoomPlayer] player not ready, stored as desired:", normalizedVideoId);
+      return false;
+    }
+
+    console.log("[RoomPlayer] direct video load", {
+      videoId: normalizedVideoId,
+      startSeconds: normalizedStartSeconds,
+      autoplay: normalizedAutoplay,
+    });
+    if (normalizedAutoplay) {
+      player.loadVideoById?.(normalizedVideoId, normalizedStartSeconds);
+      player.playVideo?.();
+    } else {
+      if (typeof player.cueVideoById === "function") {
+        player.cueVideoById(normalizedVideoId, normalizedStartSeconds);
+      } else {
+        player.loadVideoById?.(normalizedVideoId, normalizedStartSeconds);
+      }
+      player.pauseVideo?.();
+    }
+
     currentVideoIdRef.current = normalizedVideoId;
+    setPlayerIsPlaying(normalizedAutoplay);
+
     return true;
+  }
+
+  function flushDesiredVideoLoad(reason = "ready") {
+    const desired = desiredVideoRef.current;
+    if (!desired?.videoId) return false;
+
+    console.log(`[RoomPlayer] flushing desired video on ${reason}:`, desired.videoId);
+    return safeLoadVideoById(desired.videoId, desired.startSeconds, {
+      autoplay: desired.autoplay,
+      trackDesired: false,
+    });
   }
 
   useEffect(() => {
@@ -420,6 +476,8 @@ export default function RoomPage() {
     if (!identity) return;
 
     let closedByEffect = false;
+    let isCleanedUp = false;
+    let activeSocket = null;
 
     function stopHeartbeat() {
       if (heartbeatTimerRef.current) {
@@ -465,11 +523,16 @@ export default function RoomPage() {
 
       try {
         const ws = new WebSocket(buildPartySocketUrl(roomId, identity));
+        activeSocket = ws;
         wsRef.current = ws;
 
         ws.onopen = () => {
           if (closedByEffect) return;
           if (wsRef.current !== ws) return;
+          if (isCleanedUp) {
+            ws.close();
+            return;
+          }
 
           reconnectAttemptRef.current = 0;
           if (reconnectTimerRef.current) {
@@ -550,19 +613,27 @@ export default function RoomPage() {
 
     return () => {
       closedByEffect = true;
+      isCleanedUp = true;
+      desiredVideoRef.current = null;
       stopHeartbeat();
       if (reconnectTimerRef.current) {
         window.clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
-      if (wsRef.current) {
-        wsRef.current.close();
+      if (activeSocket) {
+        if (activeSocket.readyState === WebSocket.OPEN || activeSocket.readyState === WebSocket.CLOSING) {
+          activeSocket.close();
+        }
       }
-      wsRef.current = null;
+      if (wsRef.current === activeSocket) {
+        wsRef.current = null;
+      }
     };
   }, [roomId, identity?.token]);
 
   useEffect(() => {
+    if (loading) return;
+
     let cancelled = false;
 
     async function mountPlayer() {
@@ -570,8 +641,10 @@ export default function RoomPage() {
         await ensureYoutubeIframeApi();
         if (cancelled || !playerContainerRef.current) return;
         if (playerRef.current) return;
+        if (!window.YT?.Player) return;
 
         nativeControlsRef.current = true;
+        console.log("[YT] creating player, container exists:", !!playerContainerRef.current);
         playerRef.current = new window.YT.Player(playerContainerRef.current, {
           playerVars: {
             autoplay: 0,
@@ -585,7 +658,9 @@ export default function RoomPage() {
           events: {
             onReady: () => {
               if (cancelled) return;
+              console.log("[YT] onReady fired");
 
+              playerReadyRef.current = true;
               setPlayerReady(true);
               setPlayerIsPlaying(false);
               setPlayerError("");
@@ -599,11 +674,17 @@ export default function RoomPage() {
               }
 
               const firstVideoId = String(currentOpeningRef.current?.youtube_video_id || "").trim();
-              if (roomRef.current?.status === "playing" && firstVideoId) {
+              const videoIdOnReady = desiredVideoRef.current?.videoId || firstVideoId || "(none)";
+              console.log("[YT] onReady about to load videoId:", videoIdOnReady);
+
+              const didFlushDesiredVideo = flushDesiredVideoLoad("ready");
+              if (didFlushDesiredVideo) {
                 remotePlayerMutationUntilRef.current = Date.now() + 500;
-                if (safeLoadVideoById(firstVideoId, 0)) {
-                  playerRef.current?.pauseVideo?.();
-                }
+              }
+
+              if (!didFlushDesiredVideo && roomRef.current?.status === "playing" && firstVideoId) {
+                remotePlayerMutationUntilRef.current = Date.now() + 500;
+                safeLoadVideoById(firstVideoId, 0, { autoplay: false });
               }
 
               if (lastIncomingPlayerStateRef.current) {
@@ -618,6 +699,7 @@ export default function RoomPage() {
               const CUED = Number(window.YT?.PlayerState?.CUED);
 
               if (ytState === CUED || ytState === PLAYING || ytState === PAUSED) {
+                playerReadyRef.current = true;
                 setPlayerReady(true);
               }
 
@@ -649,6 +731,31 @@ export default function RoomPage() {
                 publishHostPlayerState("host-paused", false);
               }
             },
+            onError: (event) => {
+              const code = Number(event?.data || 0);
+              const messageByCode = {
+                2: "Invalid YouTube video id",
+                5: "YouTube player error",
+                100: "Video not found or removed",
+                101: "Video embedding disabled by owner",
+                150: "Video embedding disabled by owner",
+              };
+
+              setPlayerError(messageByCode[code] || `YouTube playback error (${code || "unknown"})`);
+              setPlayerIsPlaying(false);
+
+              // Keep playerReady intact: player instance is still alive, only the current video failed.
+              const desired = desiredVideoRef.current;
+              if (desired?.videoId && desired.videoId !== currentVideoIdRef.current) {
+                const recovered = safeLoadVideoById(desired.videoId, desired.startSeconds, {
+                  autoplay: desired.autoplay,
+                  trackDesired: false,
+                });
+                if (recovered) {
+                  remotePlayerMutationUntilRef.current = Date.now() + 500;
+                }
+              }
+            },
           },
         });
       } catch (error) {
@@ -661,21 +768,35 @@ export default function RoomPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loading, room?.status]);
+
+  useEffect(() => {
+    if (!playerReady) return;
+
+    const desired = desiredVideoRef.current;
+    if (!desired?.videoId) return;
+    if (currentVideoIdRef.current === desired.videoId) return;
+
+    safeLoadVideoById(desired.videoId, desired.startSeconds, {
+      autoplay: desired.autoplay,
+      trackDesired: false,
+    });
+  }, [playerReady, desiredVideoVersion]);
 
   useEffect(() => {
     const player = playerRef.current;
-    if (!isPlayerApiReady(player)) return;
 
     if (room?.status !== "playing") {
-      player.pauseVideo?.();
+      desiredVideoRef.current = null;
+      player?.pauseVideo?.();
       setPlayerIsPlaying(false);
       return;
     }
 
     const nextVideoId = String(currentOpening?.youtube_video_id || "").trim();
     if (!nextVideoId) {
-      player.pauseVideo?.();
+      desiredVideoRef.current = null;
+      player?.pauseVideo?.();
       setPlayerIsPlaying(false);
       return;
     }
@@ -684,12 +805,10 @@ export default function RoomPage() {
       return;
     }
 
-    setPlayerReady(false);
+    setPlayerError("");
     setPlayerIsPlaying(false);
     remotePlayerMutationUntilRef.current = Date.now() + 500;
-    if (safeLoadVideoById(nextVideoId, 0)) {
-      player.pauseVideo?.();
-    }
+    safeLoadVideoById(nextVideoId, 0, { autoplay: false });
   }, [room?.status, currentOpening?.youtube_video_id]);
 
   useEffect(() => {
@@ -699,6 +818,7 @@ export default function RoomPage() {
         playerRef.current = null;
       }
       currentVideoIdRef.current = "";
+      desiredVideoRef.current = null;
     };
   }, []);
 
@@ -905,12 +1025,11 @@ export default function RoomPage() {
       setPlayerIsPlaying(false);
 
       const nextVideoId = String(payload.videoId || "").trim();
-      if (nextVideoId && isPlayerApiReady(playerRef.current)) {
-        setPlayerReady(false);
+      if (nextVideoId) {
+        desiredVideoRef.current = null;
+        setPlayerError("");
         remotePlayerMutationUntilRef.current = Date.now() + 500;
-        if (safeLoadVideoById(nextVideoId, 0)) {
-          playerRef.current?.pauseVideo?.();
-        }
+        safeLoadVideoById(nextVideoId, 0, { autoplay: false });
       }
 
       return;
@@ -929,7 +1048,6 @@ export default function RoomPage() {
 
   function applyRemotePlayerState(snapshot, driftOnly) {
     const player = playerRef.current;
-    if (!isPlayerApiReady(player) || !playerReadyRef.current) return;
 
     const roomOpeningIndex = Number(roomRef.current?.current_opening_index || 0);
     const snapshotOpeningIndex = Number(snapshot?.openingIndex);
@@ -942,12 +1060,22 @@ export default function RoomPage() {
     const expectedVideoId = String(currentOpeningRef.current?.youtube_video_id || "").trim();
     const targetTimestamp = Math.max(0, Number(snapshot?.timestamp || 0));
 
-    if (snapshotVideoId && snapshotVideoId !== expectedVideoId) {
-      remotePlayerMutationUntilRef.current = Date.now() + 600;
-      setPlayerReady(false);
-      if (safeLoadVideoById(snapshotVideoId, targetTimestamp)) {
-        player.pauseVideo?.();
+    if (!isPlayerApiReady(player) || !playerReadyRef.current) {
+      if (snapshotVideoId) {
+        const shouldPlay = Boolean(snapshot?.isPlaying);
+        setPlayerError("");
+        expectedRemotePlaybackRef.current = shouldPlay;
+        safeLoadVideoById(snapshotVideoId, targetTimestamp, { autoplay: shouldPlay });
       }
+      return;
+    }
+
+    if (snapshotVideoId && snapshotVideoId !== expectedVideoId) {
+      const shouldPlay = Boolean(snapshot?.isPlaying);
+      setPlayerError("");
+      expectedRemotePlaybackRef.current = shouldPlay;
+      remotePlayerMutationUntilRef.current = Date.now() + 600;
+      safeLoadVideoById(snapshotVideoId, targetTimestamp, { autoplay: shouldPlay });
       return;
     }
 
@@ -976,7 +1104,7 @@ export default function RoomPage() {
 
     if (!shouldPlay && currentState === PLAYING) {
       remotePlayerMutationUntilRef.current = Date.now() + 500;
-      player.pauseVideo();
+      player.pauseVideo?.();
     }
 
     setPlayerIsPlaying(shouldPlay);
@@ -1032,6 +1160,10 @@ export default function RoomPage() {
 
   function toggleMute() {
     setPlayerMuted((prev) => !prev);
+  }
+
+  function toggleVolumePanel() {
+    setVolumePanelOpen((prev) => !prev);
   }
 
   async function fetchParticipants() {
@@ -1376,13 +1508,14 @@ export default function RoomPage() {
                     {playerError}
                   </div>
                 ) : null}
-                <div className="absolute left-3 right-3 bottom-3 z-30 rounded-xl border border-slate-700/80 bg-slate-950/85 backdrop-blur px-3 py-2">
-                  <div className="flex items-center gap-3">
+                <div className="absolute right-3 bottom-3 z-30 flex items-end gap-2">
+                  <div className="relative">
                     <button
                       type="button"
-                      className="p-2 rounded-lg bg-slate-900 hover:bg-slate-800 transition-colors"
-                      onClick={toggleMute}
-                      aria-label={playerMuted || playerVolume <= 0 ? "Unmute" : "Mute"}
+                      className="p-2 rounded-lg border border-slate-700/80 bg-slate-950/85 backdrop-blur hover:bg-slate-900 transition-colors"
+                      onClick={toggleVolumePanel}
+                      aria-label="Open volume control"
+                      aria-expanded={volumePanelOpen}
                     >
                       {playerMuted || playerVolume <= 0 ? (
                         <VolumeX className="w-4 h-4 text-slate-200" />
@@ -1390,22 +1523,40 @@ export default function RoomPage() {
                         <Volume2 className="w-4 h-4 text-slate-200" />
                       )}
                     </button>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={playerVolume}
-                      onChange={(event) => handleVolumeChange(event.target.value)}
-                      className="w-full accent-brand-400"
-                      aria-label="Player volume"
-                    />
-                    <span className="text-[11px] tabular-nums w-9 text-right text-slate-300">
-                      {playerMuted ? 0 : playerVolume}
-                    </span>
+
+                    {volumePanelOpen ? (
+                      <div className="absolute bottom-12 right-0 w-44 rounded-xl border border-slate-700/80 bg-slate-950/95 backdrop-blur p-3 shadow-2xl">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[10px] uppercase tracking-widest text-slate-400">Volume</span>
+                          <button
+                            type="button"
+                            className="text-[10px] uppercase tracking-widest text-slate-300 hover:text-white"
+                            onClick={toggleMute}
+                          >
+                            {playerMuted || playerVolume <= 0 ? "Unmute" : "Mute"}
+                          </button>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={playerVolume}
+                          onChange={(event) => handleVolumeChange(event.target.value)}
+                          className="w-full accent-brand-400"
+                          aria-label="Player volume"
+                        />
+                        <div className="mt-2 text-right text-[11px] tabular-nums text-slate-300">
+                          {playerMuted ? 0 : playerVolume}%
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
+
                   {!isHost ? (
-                    <p className="text-[10px] text-slate-400 mt-1 uppercase tracking-wider">Solo el host controla play/pausa/seek</p>
+                    <div className="rounded-lg border border-slate-700/80 bg-slate-950/85 backdrop-blur px-2 py-1.5">
+                      <p className="text-[10px] text-slate-400 uppercase tracking-wider whitespace-nowrap">Solo host controla play/pausa/seek</p>
+                    </div>
                   ) : null}
                 </div>
               </>
