@@ -390,6 +390,13 @@ export default function RoomPage() {
     });
   }, [openings, currentOpeningIndex]);
 
+  const visibleQueue = useMemo(() => {
+    if (queueExpanded) {
+      return openings;
+    }
+    return featuredQueue;
+  }, [queueExpanded, openings, featuredQueue]);
+
   const openingAverage = useMemo(() => {
     const totalVotes = currentOpeningVotes.length;
     if (!totalVotes) {
@@ -1555,7 +1562,7 @@ export default function RoomPage() {
 
   return (
     <>
-      <div className="max-w-[1700px] mx-auto px-3 md:px-4 lg:px-6 py-4 md:py-6 lg:py-8 min-h-[100dvh] flex flex-col gap-4 md:gap-6">
+      <div className="max-w-[1640px] mx-auto px-3 md:px-4 lg:px-6 py-3 md:py-4 lg:py-5 min-h-[100dvh] flex flex-col gap-3 md:gap-4">
       {uiNotice ? (
         <div
           className={`text-sm px-4 py-3.5 rounded-xl border flex items-start gap-3 animate-fade-in ${
@@ -1636,7 +1643,7 @@ export default function RoomPage() {
         </div>
       ) : null}
 
-      <div className="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.9fr)] gap-4 md:gap-6 xl:gap-8 min-h-0">
+      <div className="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,430px)] gap-4 md:gap-5 xl:gap-6 min-h-0">
         <div className="flex flex-col gap-4 md:gap-6 min-h-0 xl:min-w-0">
           {room?.status === "playing" && currentOpening && (
             <div className="flex items-center justify-between px-4 md:px-5 py-2.5 bg-slate-900/40 border border-slate-800 rounded-2xl">
@@ -1651,7 +1658,7 @@ export default function RoomPage() {
           )}
 
           <div
-            className="relative aspect-video lg:aspect-[16/10] xl:aspect-[16/9] bg-black rounded-3xl overflow-hidden shadow-2xl border border-slate-800 group min-h-[280px] md:min-h-[420px] lg:min-h-[520px]"
+            className="relative bg-black rounded-3xl overflow-hidden shadow-2xl border border-slate-800 group h-[clamp(240px,48vh,560px)]"
             onMouseLeave={() => setVolumePanelOpen(false)}
           >
             {room?.status === "waiting" ? (
@@ -1832,7 +1839,7 @@ export default function RoomPage() {
           )}
         </div>
 
-        <div className="flex flex-col gap-4 md:gap-6 min-h-0 xl:min-w-0">
+        <div className="flex flex-col gap-4 md:gap-6 min-h-0 xl:min-w-0 xl:w-full xl:max-w-[430px] xl:justify-self-end">
           <div className="card flex-1 flex flex-col min-h-0 p-0 overflow-hidden">
             <div className="flex-1 overflow-y-auto p-5 md:p-6 scrollbar-thin space-y-7">
               <div className="rounded-2xl border border-brand-500/25 bg-brand-500/10 px-4 py-3.5">
@@ -1862,12 +1869,21 @@ export default function RoomPage() {
                   ) : null}
                 </div>
 
-                {mergedParticipants
-                  .slice(0, participantsExpanded ? mergedParticipants.length : 5)
-                  .map((participant) => {
+                <div
+                  className={`space-y-2.5 ${
+                    participantsExpanded && mergedParticipants.length > 8
+                      ? "max-h-[min(38vh,24rem)] overflow-y-auto scrollbar-thin pr-1"
+                      : ""
+                  }`}
+                >
+                  {mergedParticipants
+                    .slice(0, participantsExpanded ? mergedParticipants.length : 5)
+                    .map((participant) => {
                   const isActive = activeUserSet.has(participant.user_uuid);
                   const voted = hasVoted(participant.user_uuid);
                   const score = userScoreMap[participant.user_uuid];
+                  const averageScore = Number(roomUserAverages[participant.user_uuid]);
+                  const hasAverageScore = Number.isFinite(averageScore) && averageScore > 0;
 
                   return (
                     <div
@@ -1913,9 +1929,14 @@ export default function RoomPage() {
                       <div className="min-w-[2rem] text-right text-base font-black text-brand-300">
                         {voted ? formatRatingValue(score) : isActive ? "-" : ""}
                       </div>
+
+                      <div className="pointer-events-none absolute right-3 -top-2 z-20 translate-y-1 rounded-lg border border-slate-700/80 bg-slate-950/95 px-2.5 py-1.5 text-[11px] font-semibold text-slate-200 opacity-0 shadow-xl transition-all duration-150 group-hover:-translate-y-1 group-hover:opacity-100">
+                        Avg: {hasAverageScore ? formatRatingValue(averageScore) : "No ratings yet"}
+                      </div>
                     </div>
                   );
                 })}
+                </div>
               </div>
 
               <div className="border-t border-slate-800 pt-6 space-y-3.5">
@@ -1955,7 +1976,7 @@ export default function RoomPage() {
 
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs uppercase tracking-[0.12em] text-slate-500 font-bold">Queue</p>
-                  {hiddenQueue.length > 0 ? (
+                  {openings.length > featuredQueue.length ? (
                     <button
                       type="button"
                       className="text-xs uppercase tracking-[0.12em] text-slate-400 hover:text-slate-200"
@@ -1967,8 +1988,12 @@ export default function RoomPage() {
                   ) : null}
                 </div>
 
-                <div className="space-y-2.5 pr-1">
-                  {[...featuredQueue, ...(queueExpanded ? hiddenQueue : [])].map((opening) => {
+                <div
+                  className={`space-y-2.5 pr-1 ${
+                    queueExpanded ? "max-h-[min(56vh,34rem)] overflow-y-auto scrollbar-thin" : ""
+                  }`}
+                >
+                  {visibleQueue.map((opening) => {
                     const isCurrent = opening.order_index === room?.current_opening_index;
                     const isPlayable = Boolean(opening.youtube_video_id);
 
