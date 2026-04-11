@@ -26,3 +26,7 @@ pnpm-debug.log*
 # OS/editor
 .DS_Store
 Thumbs.db
+
+# Local analysis artifacts (never commit)
+tmp_openings_missing_youtube_links.*
+.tmp_build_*youtube_links.js
