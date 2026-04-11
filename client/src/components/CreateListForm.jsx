@@ -7,6 +7,82 @@ function sanitizeOpeningLabel(value) {
   return String(value).replace(/^\d+\s*[:-]\s*/g, "").trim();
 }
 
+function inferThemeKind(value) {
+  return /^ED/i.test(String(value || "").trim()) ? "ED" : "OP";
+}
+
+function normalizeThemeKind(value = "", fallbackLabel = "") {
+  const compact = String(value || "").trim().toUpperCase().replace(/\s+/g, " ");
+  const match = /^(OP|ED)(?:\s+(\d+))?$/.exec(compact);
+  if (match) {
+    const kind = match[1];
+    const parsedNum = Number(match[2] || 0);
+    const normalizedNum = Number.isFinite(parsedNum) && parsedNum > 0 ? parsedNum : 1;
+    return `${kind} ${normalizedNum}`;
+  }
+
+  const fallbackKind = inferThemeKind(fallbackLabel);
+  return `${fallbackKind} 1`;
+}
+
+function normalizeSearchText(value) {
+  return String(value || "").toLowerCase().trim();
+}
+
+function tokenizeSearchQuery(value) {
+  return normalizeSearchText(value)
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 2 || /^\d+$/.test(token));
+}
+
+function dedupeAndRankAnimeResults(items, query) {
+  const rows = Array.isArray(items) ? items : [];
+  const deduped = [];
+  const seenIds = new Set();
+
+  for (const anime of rows) {
+    const animeId = String(anime?.mal_id || "").trim();
+    if (!animeId || seenIds.has(animeId)) continue;
+    seenIds.add(animeId);
+    deduped.push(anime);
+  }
+
+  const tokens = tokenizeSearchQuery(query);
+  if (tokens.length === 0) return deduped;
+
+  const normalizedQuery = normalizeSearchText(query);
+  const scored = deduped
+    .map((anime, index) => {
+      const titleParts = [
+        anime?.title_english,
+        anime?.title,
+        anime?.title_japanese,
+        ...(Array.isArray(anime?.title_synonyms) ? anime.title_synonyms : []),
+      ]
+        .filter(Boolean)
+        .map((value) => normalizeSearchText(value));
+
+      const haystack = titleParts.join(" ");
+      const tokenMatches = tokens.reduce((acc, token) => acc + (haystack.includes(token) ? 1 : 0), 0);
+      if (tokenMatches === 0) return null;
+
+      const primary = normalizeSearchText(anime?.title_english || anime?.title || "");
+      const exactBonus = primary.includes(normalizedQuery) ? 15 : 0;
+
+      return {
+        anime,
+        index,
+        score: tokenMatches * 10 + exactBonus,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((entry) => entry.anime);
+
+  return scored.length > 0 ? scored : deduped;
+}
+
 export default function CreateListForm({ identity, onListCreated, availableLists = [] }) {
   const [mode, setMode] = useState("preset");
   const [listName, setListName] = useState("");
@@ -35,7 +111,7 @@ export default function CreateListForm({ identity, onListCreated, availableLists
       setAnimeSearchLoading(true);
       try {
         const data = await apiGet(`/api/jikan/search-anime?q=${encodeURIComponent(animeSearch)}`);
-        setAnimeResults(data.data || []);
+        setAnimeResults(dedupeAndRankAnimeResults(data.data || [], animeSearch));
       } catch {
         setAnimeResults([]);
       } finally {
@@ -114,6 +190,7 @@ export default function CreateListForm({ identity, onListCreated, availableLists
       anime_id: item.anime_id,
       anime_title: item.anime_title,
       opening_label: item.opening_label,
+      theme_kind: normalizeThemeKind(item.theme_kind, item.opening_label),
       youtube_video_id: item.youtube_video_id,
       thumbnail_url: item.thumbnail_url,
       order_index: index,
@@ -137,6 +214,7 @@ export default function CreateListForm({ identity, onListCreated, availableLists
         anime_id: item.anime_id,
         anime_title: item.anime_title,
         opening_label: item.opening_label,
+        theme_kind: item.theme_kind,
         youtube_video_id: item.youtube_video_id,
         thumbnail_url: item.thumbnail_url,
       }));
@@ -165,6 +243,7 @@ export default function CreateListForm({ identity, onListCreated, availableLists
         anime_id: item.anime_id,
         anime_title: item.anime_title,
         opening_label: item.opening_label,
+        theme_kind: item.theme_kind,
         youtube_video_id: item.youtube_video_id,
         thumbnail_url: item.thumbnail_url,
       }));
@@ -203,6 +282,7 @@ export default function CreateListForm({ identity, onListCreated, availableLists
       setCustomOpenings(
         (data.openings || []).map((item) => ({
           ...item,
+          theme_kind: normalizeThemeKind(item.theme_kind, item.opening_label),
           opening_options: [item.opening_label || "OP1"],
           selected_video_title: "",
           selected_video_channel: "",
@@ -242,6 +322,7 @@ export default function CreateListForm({ identity, onListCreated, availableLists
         anime_id: anime.mal_id,
         anime_title: anime.title_english || anime.title,
         opening_label: openingOptions[0],
+        theme_kind: "OP 1",
         opening_options: openingOptions,
         youtube_video_id: "",
         thumbnail_url: anime.images?.jpg?.image_url || "",

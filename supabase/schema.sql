@@ -84,7 +84,7 @@ create table if not exists ratings (
   list_opening_id uuid not null references list_openings(id) on delete cascade,
   user_uuid text not null,
   user_id uuid references app_users(id) on delete cascade,
-  score int not null check (score between 1 and 10),
+  score numeric(3,1) not null check (score between 1 and 10 and mod(score * 10, 5) = 0),
   submitted_at timestamptz not null default now(),
   unique (room_id, list_opening_id, user_uuid)
 );

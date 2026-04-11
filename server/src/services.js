@@ -18,6 +18,19 @@ const PREFERRED_CHANNELS = [
 const TOP_ANIME_IMPORT_MAX = 300;
 const MAX_OPENINGS_PER_ANIME = 6;
 
+export function resolveAnimeRomajiTitle(anime = {}) {
+  const romajiTitle =
+    String(anime?.title || "").trim() ||
+    String(
+      anime?.titles?.find((entry) => String(entry?.type || "").toLowerCase() === "default")?.title || "",
+    ).trim() ||
+    String(anime?.title_romanized || "").trim() ||
+    String(anime?.title_english || "").trim() ||
+    String(anime?.title_japanese || "").trim();
+
+  return romajiTitle;
+}
+
 async function fetchJson(url) {
   const cached = cache.get(url);
   if (cached) return cached;
@@ -99,6 +112,16 @@ export async function getTopAnime(limit = 25, source = "score") {
 export async function searchAnime(query) {
   const q = encodeURIComponent(query || "");
   const url = `${JIKAN_BASE}/anime?q=${q}&limit=20`;
+  return fetchJson(url);
+}
+
+export async function getAnimeDetails(animeId) {
+  const safeAnimeId = Number(animeId);
+  if (!Number.isFinite(safeAnimeId) || safeAnimeId <= 0) {
+    throw new Error("Invalid anime id");
+  }
+
+  const url = `${JIKAN_BASE}/anime/${safeAnimeId}`;
   return fetchJson(url);
 }
 
@@ -237,7 +260,7 @@ export async function buildPresetTopOpenings(limit = 20, source = "score") {
 
   const openings = [];
   for (const anime of animeList) {
-    const animeTitle = anime.title_english || anime.title;
+    const animeTitle = resolveAnimeRomajiTitle(anime);
     try {
       const themes = await getAnimeThemes(anime.mal_id);
       const openingLabels = (themes?.data?.openings || [])
@@ -392,7 +415,7 @@ export async function buildMalTopOpeningsDataset(options = {}) {
   const openings = [];
 
   for (const anime of animeList) {
-    const animeTitle = anime.title_english || anime.title;
+    const animeTitle = resolveAnimeRomajiTitle(anime);
     let openingLabels = [];
 
     try {

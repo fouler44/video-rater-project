@@ -25,6 +25,64 @@ function sanitizeOpeningLabel(value) {
   return String(value).replace(/^\d+\s*[:-]\s*/g, "").trim();
 }
 
+function normalizeSearchText(value) {
+  return String(value || "").toLowerCase().trim();
+}
+
+function tokenizeSearchQuery(value) {
+  return normalizeSearchText(value)
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 2 || /^\d+$/.test(token));
+}
+
+function dedupeAndRankAnimeResults(items, query) {
+  const rows = Array.isArray(items) ? items : [];
+  const deduped = [];
+  const seenIds = new Set();
+
+  for (const anime of rows) {
+    const animeId = String(anime?.mal_id || "").trim();
+    if (!animeId || seenIds.has(animeId)) continue;
+    seenIds.add(animeId);
+    deduped.push(anime);
+  }
+
+  const tokens = tokenizeSearchQuery(query);
+  if (tokens.length === 0) return deduped;
+
+  const normalizedQuery = normalizeSearchText(query);
+  const scored = deduped
+    .map((anime, index) => {
+      const titleParts = [
+        anime?.title_english,
+        anime?.title,
+        anime?.title_japanese,
+        ...(Array.isArray(anime?.title_synonyms) ? anime.title_synonyms : []),
+      ]
+        .filter(Boolean)
+        .map((value) => normalizeSearchText(value));
+
+      const haystack = titleParts.join(" ");
+      const tokenMatches = tokens.reduce((acc, token) => acc + (haystack.includes(token) ? 1 : 0), 0);
+      if (tokenMatches === 0) return null;
+
+      const primary = normalizeSearchText(anime?.title_english || anime?.title || "");
+      const exactBonus = primary.includes(normalizedQuery) ? 15 : 0;
+
+      return {
+        anime,
+        index,
+        score: tokenMatches * 10 + exactBonus,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((entry) => entry.anime);
+
+  return scored.length > 0 ? scored : deduped;
+}
+
 function extractYoutubeVideoId(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -44,7 +102,7 @@ function extractYoutubeVideoId(value) {
     if (/^[a-zA-Z0-9_-]{11}$/.test(fromV)) return fromV;
 
     const pathParts = String(url.pathname || "").split("/").filter(Boolean);
-    const embedIndex = pathParts.findIndex((part) => part === "embed" || part === "shorts");
+    const embedIndex = pathParts.findIndex((part) => part === "embed" || part === "shorts" || part === "live");
     if (embedIndex >= 0 && /^[a-zA-Z0-9_-]{11}$/.test(pathParts[embedIndex + 1] || "")) {
       return pathParts[embedIndex + 1];
     }
@@ -55,10 +113,108 @@ function extractYoutubeVideoId(value) {
   }
 }
 
+function normalizeThemeLabel(value) {
+  return sanitizeOpeningLabel(value || "");
+}
+
+function inferThemeKindFromLabel(label = "") {
+  return /^\s*ED(\b|[^A-Z0-9])/i.test(String(label || "")) ? "ED" : "OP";
+}
+
+function normalizeThemeKind(value = "", fallback = "OP") {
+  const compact = String(value || "").trim().toUpperCase().replace(/\s+/g, " ");
+  const match = /^(OP|ED)(?:\s+(\d+))?$/.exec(compact);
+  if (match) {
+    const kind = match[1];
+    const rawNum = Number(match[2] || 0);
+    if (Number.isFinite(rawNum) && rawNum > 0) {
+      return `${kind} ${rawNum}`;
+    }
+    return kind;
+  }
+
+  const normalizedFallback = String(fallback || "OP").trim().toUpperCase();
+  return normalizedFallback.startsWith("ED") ? "ED" : "OP";
+}
+
+function parseThemeEntry(rawValue, fallbackNumber = 1) {
+  const raw = String(rawValue || "").trim();
+  const match = /^\s*(\d+)\s*[:.-]\s*(.+)\s*$/.exec(raw);
+
+  if (match) {
+    const parsedNumber = Number(match[1] || 0);
+    const normalizedNumber = Number.isFinite(parsedNumber) && parsedNumber > 0 ? parsedNumber : fallbackNumber;
+    return {
+      themeNumber: normalizedNumber,
+      normalizedLabel: normalizeThemeLabel(match[2] || ""),
+    };
+  }
+
+  return {
+    themeNumber: Math.max(1, Number(fallbackNumber) || 1),
+    normalizedLabel: normalizeThemeLabel(raw),
+  };
+}
+
+function getThemeStorageLabel(kind, rawLabel) {
+  const normalized = normalizeThemeLabel(rawLabel);
+  if (!normalized) return kind === "ending" ? "ED1" : "OP1";
+  return normalized;
+}
+
+function buildThemeOptions(themesPayload) {
+  const openings = Array.isArray(themesPayload?.data?.openings) ? themesPayload.data.openings : [];
+  const endings = Array.isArray(themesPayload?.data?.endings) ? themesPayload.data.endings : [];
+  const codeByKind = {
+    opening: "OP",
+    ending: "ED",
+  };
+
+  function createOptions(kind, entries) {
+    const seen = new Set();
+    const code = codeByKind[kind] || "OP";
+
+    return entries
+      .map((entry, index) => {
+        const parsed = parseThemeEntry(entry, index + 1);
+        const storageLabel = getThemeStorageLabel(kind, parsed.normalizedLabel);
+        const normalizedKey = `${parsed.themeNumber}::${storageLabel.toLowerCase()}`;
+        if (seen.has(normalizedKey)) return null;
+        seen.add(normalizedKey);
+
+        return {
+          key: `${kind}::${normalizedKey}`,
+          kind,
+          storageLabel,
+          themeKind: `${code} ${parsed.themeNumber}`,
+          displayLabel: `${kind === "ending" ? "Ending" : "Opening"} ${parsed.themeNumber} - ${storageLabel}`,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  const options = [...createOptions("opening", openings), ...createOptions("ending", endings)];
+
+  if (options.length === 0) {
+    options.push({
+      key: "opening::op1",
+      kind: "opening",
+      storageLabel: "OP1",
+      themeKind: "OP 1",
+      displayLabel: "Opening 1 - OP1",
+    });
+  }
+
+  return options;
+}
+
 function mapOpeningWithManualInput(item) {
   const youtubeId = String(item?.youtube_video_id || "").trim();
+  const rawThemeKind = String(item?.theme_kind || "").trim();
+  const inferredThemeKind = inferThemeKindFromLabel(item?.opening_label || "");
   return {
     ...item,
+    theme_kind: normalizeThemeKind(rawThemeKind, inferredThemeKind),
     youtube_video_id: youtubeId,
     manual_video_input: youtubeId,
   };
@@ -86,6 +242,12 @@ export default function CreateListPage() {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [addingAnimeId, setAddingAnimeId] = useState("");
+  const [themeDialog, setThemeDialog] = useState({
+    open: false,
+    anime: null,
+    options: [],
+    selectedKeys: [],
+  });
 
   const [uiNotice, setUiNotice] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState({
@@ -101,6 +263,18 @@ export default function CreateListPage() {
     () => editingSource !== "youtube" && listName.trim().length > 0 && listItems.length > 0,
     [editingSource, listItems.length, listName],
   );
+
+  const openingThemeOptions = useMemo(
+    () => themeDialog.options.filter((option) => option.kind === "opening"),
+    [themeDialog.options],
+  );
+
+  const endingThemeOptions = useMemo(
+    () => themeDialog.options.filter((option) => option.kind === "ending"),
+    [themeDialog.options],
+  );
+
+  const selectedThemeCount = themeDialog.selectedKeys.length;
 
   useEffect(() => {
     if (!identity) {
@@ -187,7 +361,7 @@ export default function CreateListPage() {
     setIsSearching(true);
     try {
       const data = await apiGet(`/api/jikan/search-anime?q=${encodeURIComponent(searchQuery)}&limit=10`);
-      setSearchResults(data.data || []);
+      setSearchResults(dedupeAndRankAnimeResults(data.data || [], searchQuery));
     } catch {
       setSearchResults([]);
     } finally {
@@ -207,46 +381,176 @@ export default function CreateListPage() {
     setAddingAnimeId(animeId);
 
     try {
-      let openingLabels = ["OP1"];
+      let themeData = null;
       try {
-        const data = await apiGet(`/api/jikan/anime/${animeId}/themes`);
-        const fromThemes = (data?.data?.openings || [])
-          .map((label) => sanitizeOpeningLabel(label))
-          .filter(Boolean);
-        if (fromThemes.length > 0) {
-          openingLabels = [...new Set(fromThemes)];
-        }
+        themeData = await apiGet(`/api/jikan/anime/${animeId}/themes`);
       } catch {
-        openingLabels = ["OP1"];
+        themeData = null;
       }
 
-      const animeTitle = anime.title_english || anime.title || `MAL ${animeId}`;
-      const thumb = anime.images?.jpg?.image_url || anime.images?.jpg?.large_image_url || "";
+      const options = buildThemeOptions(themeData);
+      const preferred = options.filter((item) => item.kind === "opening").map((item) => item.key);
+      const selectedKeys = preferred.length > 0 ? preferred : [options[0].key];
 
-      const existingKeys = new Set(
-        listItems.map((item) => `${item.anime_id}::${String(item.opening_label || "").trim().toLowerCase()}`),
-      );
-
-      const rowsToAdd = openingLabels
-        .map((label) => ({
-          anime_id: Number(animeId),
-          anime_title: animeTitle,
-          opening_label: label,
-          youtube_video_id: "",
-          manual_video_input: "",
-          thumbnail_url: thumb,
-        }))
-        .filter((row) => !existingKeys.has(`${row.anime_id}::${String(row.opening_label || "").trim().toLowerCase()}`));
-
-      if (rowsToAdd.length === 0) {
-        showNotice("That anime (openings) is already in the list.", "error");
-        return;
-      }
-
-      setListItems((prev) => [...prev, ...rowsToAdd]);
-      showNotice(`${rowsToAdd.length} opening(s) added without YouTube link.`, "success");
+      setThemeDialog({
+        open: true,
+        anime,
+        options,
+        selectedKeys,
+      });
     } finally {
       setAddingAnimeId("");
+    }
+  }
+
+  async function persistMalList(items, { successMessage = "MAL list saved.", allowEmpty = false } = {}) {
+    if (!identity || editingSource === "youtube" || !editingListId) return false;
+
+    const nextName = String(listName || "").trim();
+    if (!nextName) {
+      showNotice("List name is required.", "error");
+      return false;
+    }
+
+    if (!allowEmpty && (!Array.isArray(items) || items.length === 0)) {
+      showNotice("List needs at least one entry.", "error");
+      return false;
+    }
+
+    setSaving(true);
+    try {
+      const payload = (items || []).map((item) => ({
+        anime_id: item.anime_id,
+        anime_title: item.anime_title,
+        opening_label: item.opening_label,
+        theme_kind: normalizeThemeKind(item.theme_kind, inferThemeKindFromLabel(item.opening_label)),
+        youtube_video_id: item.youtube_video_id,
+        thumbnail_url: item.thumbnail_url,
+      }));
+
+      await apiPost("/api/lists/save", {
+        listId: editingListId,
+        name: nextName,
+        isPreset: false,
+        source: "mal",
+        openings: payload,
+      });
+
+      showNotice(successMessage, "success");
+      return true;
+    } catch (error) {
+      showNotice(error.message || "Could not save list", "error");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function confirmAddThemes() {
+    const anime = themeDialog.anime;
+    if (!anime) return;
+
+    const animeId = Number(anime?.mal_id || 0);
+    if (!Number.isFinite(animeId) || animeId <= 0) return;
+
+    const selected = themeDialog.options.filter((option) => themeDialog.selectedKeys.includes(option.key));
+    if (selected.length === 0) {
+      showNotice("Choose at least one opening/ending.", "error");
+      return;
+    }
+
+    setThemeDialog({ open: false, anime: null, options: [], selectedKeys: [] });
+
+    const animeTitle = anime.title_english || anime.title || `MAL ${animeId}`;
+    const thumb = anime.images?.jpg?.image_url || anime.images?.jpg?.large_image_url || "";
+
+    const existingKeys = new Set(
+      listItems.map(
+        (item) =>
+          `${item.anime_id}::${normalizeThemeKind(item.theme_kind, inferThemeKindFromLabel(item.opening_label))}::${String(item.opening_label || "").trim().toLowerCase()}`,
+      ),
+    );
+
+    const rowsToAdd = selected
+      .map((option) => ({
+        anime_id: animeId,
+        anime_title: animeTitle,
+        opening_label: option.storageLabel,
+        theme_kind: normalizeThemeKind(option.themeKind, option.kind === "ending" ? "ED" : "OP"),
+        youtube_video_id: "",
+        manual_video_input: "",
+        thumbnail_url: thumb,
+      }))
+      .filter(
+        (row) =>
+          !existingKeys.has(
+            `${row.anime_id}::${normalizeThemeKind(row.theme_kind, inferThemeKindFromLabel(row.opening_label))}::${String(row.opening_label || "").trim().toLowerCase()}`,
+          ),
+      );
+
+    const nextItems = [...listItems, ...rowsToAdd];
+
+    if (rowsToAdd.length === 0) {
+      showNotice("Those openings/endings are already in the list.", "error");
+      return;
+    }
+
+    setListItems(nextItems);
+
+    const ok = await persistMalList(nextItems, {
+      successMessage: `${rowsToAdd.length} item(s) added and saved.`,
+    });
+
+    if (!ok) {
+      await startEditMalList(editingListId);
+      return;
+    }
+
+  }
+
+  function toggleThemeOption(key) {
+    setThemeDialog((prev) => ({
+      ...prev,
+      selectedKeys: prev.selectedKeys.includes(key)
+        ? prev.selectedKeys.filter((entry) => entry !== key)
+        : [...prev.selectedKeys, key],
+    }));
+  }
+
+  function selectAllThemeOptions() {
+    setThemeDialog((prev) => ({
+      ...prev,
+      selectedKeys: prev.options.map((item) => item.key),
+    }));
+  }
+
+  function selectThemeGroup(kind) {
+    setThemeDialog((prev) => ({
+      ...prev,
+      selectedKeys: prev.options.filter((item) => item.kind === kind).map((item) => item.key),
+    }));
+  }
+
+  function clearThemeSelection() {
+    setThemeDialog((prev) => ({
+      ...prev,
+      selectedKeys: [],
+    }));
+  }
+
+  async function removeItemFromMalList(index) {
+    if (editingSource === "youtube") return;
+
+    const nextItems = listItems.filter((_, i) => i !== index);
+    setListItems(nextItems);
+
+    const ok = await persistMalList(nextItems, {
+      successMessage: "Item removed and saved.",
+      allowEmpty: true,
+    });
+
+    if (!ok) {
+      await startEditMalList(editingListId);
     }
   }
 
@@ -329,7 +633,7 @@ export default function CreateListPage() {
     }
   }
 
-  function applyManualVideoLink(index) {
+  async function applyManualVideoLink(index) {
     if (editingSource === "youtube") return;
 
     const item = listItems[index];
@@ -341,49 +645,32 @@ export default function CreateListPage() {
       return;
     }
 
-    setListItems((prev) =>
-      prev.map((entry, i) => {
-        if (i !== index) return entry;
-        return {
-          ...entry,
-          youtube_video_id: normalizedId,
-          manual_video_input: normalizedId,
-          thumbnail_url: entry.thumbnail_url || `https://i.ytimg.com/vi/${normalizedId}/mqdefault.jpg`,
-        };
-      }),
-    );
+    const nextItems = listItems.map((entry, i) => {
+      if (i !== index) return entry;
+      return {
+        ...entry,
+        youtube_video_id: normalizedId,
+        manual_video_input: normalizedId,
+        thumbnail_url: entry.thumbnail_url || `https://i.ytimg.com/vi/${normalizedId}/mqdefault.jpg`,
+      };
+    });
 
-    showNotice("YouTube link updated", "success");
+    setListItems(nextItems);
+
+    const ok = await persistMalList(nextItems, {
+      successMessage: "YouTube link saved.",
+    });
+
+    if (!ok) {
+      await startEditMalList(editingListId);
+    }
   }
 
   async function handleSaveMalList() {
     if (!identity || !canSaveMal) return;
-
-    setSaving(true);
-    try {
-      const payload = listItems.map((item) => ({
-        anime_id: item.anime_id,
-        anime_title: item.anime_title,
-        opening_label: item.opening_label,
-        youtube_video_id: item.youtube_video_id,
-        thumbnail_url: item.thumbnail_url,
-      }));
-
-      await apiPost("/api/lists/save", {
-        listId: editingListId || undefined,
-        name: listName.trim(),
-        isPreset: false,
-        source: "mal",
-        openings: payload,
-      });
-
-      await loadMyLists();
-      showNotice("MAL list saved.", "success");
-    } catch (error) {
-      showNotice(error.message || "Could not save list", "error");
-    } finally {
-      setSaving(false);
-    }
+    await persistMalList(listItems, {
+      successMessage: "MAL list saved.",
+    });
   }
 
   function showNotice(message, tone = "error") {
@@ -582,7 +869,7 @@ export default function CreateListPage() {
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[420px] overflow-y-auto pr-2 scrollbar-thin">
+                  <div className="grid grid-cols-1 gap-3 max-h-[420px] overflow-y-auto pr-2 scrollbar-thin">
                     {searchResults.map((anime) => {
                       const animeId = String(anime.mal_id || "");
                       const isAdding = addingAnimeId === animeId;
@@ -605,7 +892,7 @@ export default function CreateListPage() {
                           <button
                             className="btn-secondary !px-3 !py-2 text-xs"
                             onClick={() => addAnimeToMalList(anime)}
-                            disabled={isAdding}
+                            disabled={isAdding || saving}
                           >
                             {isAdding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Add"}
                           </button>
@@ -669,8 +956,8 @@ export default function CreateListPage() {
                           </div>
                           <button
                             className="p-2 text-slate-600 hover:text-red-400 transition-colors"
-                            onClick={() => setListItems((prev) => prev.filter((_, i) => i !== idx))}
-                            disabled={editingSource === "youtube"}
+                            onClick={() => removeItemFromMalList(idx)}
+                            disabled={editingSource === "youtube" || saving}
                             title={editingSource === "youtube" ? "Read-only" : "Remove"}
                           >
                             <Trash2 className="w-4 h-4" />
@@ -693,6 +980,7 @@ export default function CreateListPage() {
                             <button
                               className="btn-secondary !px-3 !py-2 text-xs"
                               onClick={() => applyManualVideoLink(idx)}
+                              disabled={saving}
                             >
                               Apply Link
                             </button>
@@ -719,6 +1007,183 @@ export default function CreateListPage() {
       </div>
 
       <AnimatePresence>
+        {themeDialog.open ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl p-6"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-100">Choose openings/endings</h3>
+                  <p className="text-sm text-slate-300 mt-1">
+                    {themeDialog.anime?.title_english || themeDialog.anime?.title || "Selected anime"}
+                  </p>
+                </div>
+                <span className="pill text-[10px] shrink-0">{selectedThemeCount} selected</span>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <button type="button" className="btn-ghost !py-1.5 !px-3 text-xs" onClick={selectAllThemeOptions}>
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost !py-1.5 !px-3 text-xs"
+                  onClick={() => selectThemeGroup("opening")}
+                  disabled={openingThemeOptions.length === 0}
+                >
+                  Openings only
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost !py-1.5 !px-3 text-xs"
+                  onClick={() => selectThemeGroup("ending")}
+                  disabled={endingThemeOptions.length === 0}
+                >
+                  Endings only
+                </button>
+                <button type="button" className="btn-ghost !py-1.5 !px-3 text-xs" onClick={clearThemeSelection}>
+                  Clear
+                </button>
+              </div>
+
+              <div className="mt-4 max-h-[360px] overflow-y-auto space-y-4 pr-2 scrollbar-thin">
+                <section>
+                  <p className="text-xs uppercase tracking-wider text-slate-400 mb-2">
+                    Openings ({openingThemeOptions.length})
+                  </p>
+                  {openingThemeOptions.length === 0 ? (
+                    <p className="text-xs text-slate-500">No openings available for this anime.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {openingThemeOptions.map((option) => (
+                        <label
+                          key={option.key}
+                          className="group flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/30 px-3 py-2.5 cursor-pointer hover:border-brand-400/50 hover:bg-brand-500/10 transition-colors"
+                        >
+                          {(() => {
+                            const checked = themeDialog.selectedKeys.includes(option.key);
+                            return (
+                              <span
+                                className={`w-5 h-5 shrink-0 rounded-md border grid place-items-center transition-colors ${
+                                  checked
+                                    ? "bg-brand-500 border-brand-400 text-white"
+                                    : "bg-slate-900 border-slate-500 text-transparent group-hover:border-brand-300"
+                                }`}
+                                aria-hidden="true"
+                              >
+                                <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none">
+                                  <path
+                                    d="M3.5 8.5l2.5 2.5 6-6"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              </span>
+                            );
+                          })()}
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={themeDialog.selectedKeys.includes(option.key)}
+                            onChange={() => toggleThemeOption(option.key)}
+                          />
+                          <span className="text-sm text-slate-100 leading-snug">
+                            {option.displayLabel.replace(/^Opening\s*-\s*/i, "")}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <p className="text-xs uppercase tracking-wider text-slate-400 mb-2">
+                    Endings ({endingThemeOptions.length})
+                  </p>
+                  {endingThemeOptions.length === 0 ? (
+                    <p className="text-xs text-slate-500">No endings available for this anime.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {endingThemeOptions.map((option) => (
+                        <label
+                          key={option.key}
+                          className="group flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/30 px-3 py-2.5 cursor-pointer hover:border-brand-400/50 hover:bg-brand-500/10 transition-colors"
+                        >
+                          {(() => {
+                            const checked = themeDialog.selectedKeys.includes(option.key);
+                            return (
+                              <span
+                                className={`w-5 h-5 shrink-0 rounded-md border grid place-items-center transition-colors ${
+                                  checked
+                                    ? "bg-brand-500 border-brand-400 text-white"
+                                    : "bg-slate-900 border-slate-500 text-transparent group-hover:border-brand-300"
+                                }`}
+                                aria-hidden="true"
+                              >
+                                <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" fill="none">
+                                  <path
+                                    d="M3.5 8.5l2.5 2.5 6-6"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              </span>
+                            );
+                          })()}
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={themeDialog.selectedKeys.includes(option.key)}
+                            onChange={() => toggleThemeOption(option.key)}
+                          />
+                          <span className="text-sm text-slate-100 leading-snug">
+                            {option.displayLabel.replace(/^Ending\s*-\s*/i, "")}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 mt-6">
+                <p className="text-xs text-slate-400">Choose one or more options to add to your list.</p>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={() => setThemeDialog({ open: false, anime: null, options: [], selectedKeys: [] })}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={confirmAddThemes}
+                    disabled={saving || selectedThemeCount === 0}
+                  >
+                    {saving ? "Saving..." : "Add selected"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+
         {confirmDialog.open ? (
           <motion.div
             initial={{ opacity: 0 }}

@@ -11,9 +11,11 @@ import { customAlphabet } from "nanoid";
 import {
   buildMalTopOpeningsDataset,
   buildPresetTopOpenings,
+  getAnimeDetails,
   getAnimeThemes,
   importYoutubePlaylist,
   getTopAnime,
+  resolveAnimeRomajiTitle,
   searchAnime,
   searchYoutube,
 } from "./services.js";
@@ -51,7 +53,7 @@ const usedInternalNonces = new Map();
 
 const RoomIdSchema = z.string().uuid();
 const ListIdSchema = z.string().uuid();
-const ScoreSchema = z.number().int().min(1).max(10);
+const ScoreSchema = z.number().min(1).max(10).multipleOf(0.5);
 const RoomStatusSchema = z.enum(["waiting", "playing", "finished"]);
 
 const SaveListSchema = z.object({
@@ -62,18 +64,25 @@ const SaveListSchema = z.object({
   openings: z.array(
     z.object({
       anime_id: z.number().int().positive(),
-      anime_title: z.string().trim().min(1).max(240),
-      opening_label: z.string().trim().min(1).max(120),
-      youtube_video_id: z.string().trim().max(30).nullable().optional(),
+      anime_title: z.string().trim().min(1).max(800),
+      opening_label: z.string().trim().min(1).max(800),
+      theme_kind: z.string().trim().regex(/^(OP|ED)(\s+\d+)?$/i).optional(),
+      youtube_video_id: z.string().trim().max(120).nullable().optional(),
       thumbnail_url: z.string().trim().max(600).nullable().optional(),
     }),
-  ).min(1),
+  ),
 });
 
 const ImportYoutubePlaylistSchema = z.object({
   playlistUrl: z.string().trim().min(1).max(800),
   listName: z.string().trim().min(1).max(120).optional(),
   limit: z.number().int().min(1).max(300).optional(),
+});
+
+const BackfillMalOpeningsSchema = z.object({
+  listId: z.string().uuid().optional(),
+  listName: z.string().trim().min(1).max(120).optional(),
+  delayMs: z.number().int().min(0).max(1000).optional().default(0),
 });
 
 function logEvent(level, event, details = {}) {
@@ -114,10 +123,41 @@ function buildInternalSignature({ timestamp, nonce, method, path, bodyHash }) {
 function parseSchema(schema, payload, res, message = "Invalid request payload") {
   const parsed = schema.safeParse(payload);
   if (!parsed.success) {
-    res.status(400).json({ error: message });
+    const firstIssue = parsed.error?.issues?.[0];
+    const issuePath = Array.isArray(firstIssue?.path) ? firstIssue.path.join(".") : "";
+    const issueMessage = String(firstIssue?.message || "Invalid value");
+
+    res.status(400).json({
+      error: message,
+      detail: issuePath ? `${issuePath}: ${issueMessage}` : issueMessage,
+    });
     return null;
   }
   return parsed.data;
+}
+
+function inferThemeKind(value = "") {
+  const normalized = String(value || "").trim().toUpperCase().replace(/\s+/g, " ");
+  const match = /^(OP|ED)(?:\s+(\d+))?$/.exec(normalized);
+  if (match) {
+    const kind = match[1];
+    const num = Number(match[2] || 0);
+    if (Number.isFinite(num) && num > 0) {
+      return `${kind} ${num}`;
+    }
+    return kind;
+  }
+  if (normalized.startsWith("ED")) return "ED";
+  if (normalized.startsWith("OP")) return "OP";
+  return "OP";
+}
+
+function normalizeLabelForThemeMatch(value = "") {
+  return String(value || "")
+    .trim()
+    .replace(/^(OP|ED)\s*\d*\s*[-:]?\s*/i, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
 }
 
 function internalError(req, res, error, event = "internal_error") {
@@ -396,7 +436,7 @@ async function fetchRoomParticipants(roomId) {
 async function fetchListOpenings(listId) {
   const { data, error } = await supabaseAdmin
     .from("list_openings")
-    .select("id,list_id,anime_id,anime_title,opening_label,youtube_video_id,thumbnail_url,order_index")
+    .select("id,list_id,anime_id,anime_title,opening_label,theme_kind,youtube_video_id,thumbnail_url,order_index")
     .eq("list_id", listId)
     .order("order_index", { ascending: true });
 
@@ -793,7 +833,7 @@ app.get("/api/lists/:listId/openings", async (req, res) => {
 
   const { data, error } = await supabaseAdmin
     .from("list_openings")
-    .select("id,anime_id,anime_title,opening_label,youtube_video_id,thumbnail_url,order_index")
+    .select("id,anime_id,anime_title,opening_label,theme_kind,youtube_video_id,thumbnail_url,order_index")
     .eq("list_id", listId)
     .order("order_index", { ascending: true });
 
@@ -811,6 +851,7 @@ app.post("/api/lists/save", async (req, res) => {
 
   try {
     let listId = input.listId || "";
+    let previousThemeKindByEntry = new Map();
 
     if (!listId) {
       const { data: created, error: createError } = await supabaseAdmin
@@ -846,6 +887,20 @@ app.post("/api/lists/save", async (req, res) => {
 
       if (renameError) return internalError(req, res, renameError, "list_update_failed");
 
+      const { data: previousRows, error: previousRowsError } = await supabaseAdmin
+        .from("list_openings")
+        .select("anime_id,opening_label,theme_kind")
+        .eq("list_id", listId);
+
+      if (previousRowsError) return internalError(req, res, previousRowsError, "list_openings_previous_fetch_failed");
+
+      previousThemeKindByEntry = new Map(
+        (previousRows || []).map((row) => [
+          `${row.anime_id}::${normalizeLabelForThemeMatch(row.opening_label)}`,
+          String(row.theme_kind || "").trim().toUpperCase(),
+        ]),
+      );
+
       const { error: deleteError } = await supabaseAdmin
         .from("list_openings")
         .delete()
@@ -854,18 +909,28 @@ app.post("/api/lists/save", async (req, res) => {
       if (deleteError) return internalError(req, res, deleteError, "list_openings_clear_failed");
     }
 
-    const rows = input.openings.map((opening, index) => ({
-      list_id: listId,
-      anime_id: opening.anime_id,
-      anime_title: opening.anime_title,
-      opening_label: opening.opening_label,
-      youtube_video_id: String(opening.youtube_video_id || "").trim() || null,
-      thumbnail_url: String(opening.thumbnail_url || "").trim() || null,
-      order_index: index,
-    }));
+    const rows = input.openings.map((opening, index) => {
+      const normalizedIncoming = inferThemeKind(opening.theme_kind || opening.opening_label);
+      const previousKey = `${opening.anime_id}::${normalizeLabelForThemeMatch(opening.opening_label)}`;
+      const previousThemeKind = previousThemeKindByEntry.get(previousKey) || "";
+      const shouldReusePreviousNumber = /^(OP|ED)$/i.test(normalizedIncoming) && /^(OP|ED)\s+[1-9][0-9]*$/i.test(previousThemeKind);
 
-    const { error: insertError } = await supabaseAdmin.from("list_openings").insert(rows);
-    if (insertError) return internalError(req, res, insertError, "list_openings_insert_failed");
+      return {
+        list_id: listId,
+        anime_id: opening.anime_id,
+        anime_title: opening.anime_title,
+        opening_label: opening.opening_label,
+        theme_kind: shouldReusePreviousNumber ? previousThemeKind : normalizedIncoming,
+        youtube_video_id: String(opening.youtube_video_id || "").trim() || null,
+        thumbnail_url: String(opening.thumbnail_url || "").trim() || null,
+        order_index: index,
+      };
+    });
+
+    if (rows.length > 0) {
+      const { error: insertError } = await supabaseAdmin.from("list_openings").insert(rows);
+      if (insertError) return internalError(req, res, insertError, "list_openings_insert_failed");
+    }
 
     return res.status(201).json({ list: { id: listId, name: input.name } });
   } catch (error) {
@@ -1029,6 +1094,114 @@ app.post("/api/admin/import/top-mal-openings", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/admin/backfill/mal-openings-japanese-titles", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
+
+  const input = parseSchema(BackfillMalOpeningsSchema, req.body || {}, res, "Invalid backfill payload");
+  if (!input) return;
+
+  if (!input.listId && !input.listName) {
+    return res.status(400).json({ error: "Provide listId or listName" });
+  }
+
+  try {
+    let listQuery = supabaseAdmin
+      .from("lists")
+      .select("id,name,list_source,is_preset")
+      .eq("list_source", "mal");
+
+    if (input.listId) {
+      listQuery = listQuery.eq("id", input.listId);
+    } else {
+      listQuery = listQuery.eq("name", input.listName);
+    }
+
+    const { data: lists, error: listError } = await listQuery.order("created_at", { ascending: false });
+    if (listError) return internalError(req, res, listError, "mal_backfill_list_lookup_failed");
+    if (!lists?.length) {
+      return res.status(404).json({ error: "List not found" });
+    }
+
+    const delayMs = Math.max(0, Number(input.delayMs) || 0);
+    const results = [];
+    let updatedRows = 0;
+    let skippedRows = 0;
+    let failedRows = 0;
+
+    for (const list of lists) {
+      const { data: openings, error: openingsError } = await supabaseAdmin
+        .from("list_openings")
+        .select("id,anime_id,anime_title,order_index")
+        .eq("list_id", list.id)
+        .order("order_index", { ascending: true });
+
+      if (openingsError) {
+        return internalError(req, res, openingsError, "mal_backfill_openings_fetch_failed");
+      }
+
+      const openingsByAnimeId = new Map();
+      for (const opening of openings || []) {
+        const animeId = Number(opening.anime_id);
+        if (!Number.isFinite(animeId) || animeId <= 0) continue;
+        if (!openingsByAnimeId.has(animeId)) {
+          openingsByAnimeId.set(animeId, []);
+        }
+        openingsByAnimeId.get(animeId).push(opening);
+      }
+
+      let listUpdated = 0;
+      let listSkipped = 0;
+      let listFailed = 0;
+
+      for (const [animeId, matchingOpenings] of openingsByAnimeId.entries()) {
+        try {
+          const animeDetails = await getAnimeDetails(animeId);
+          const romajiTitle = resolveAnimeRomajiTitle(animeDetails?.data || animeDetails);
+
+          if (!romajiTitle) {
+            listSkipped += matchingOpenings.length;
+            continue;
+          }
+
+          const { error: updateError } = await supabaseAdmin
+            .from("list_openings")
+            .update({ anime_title: romajiTitle })
+            .eq("list_id", list.id)
+            .eq("anime_id", animeId);
+
+          if (updateError) {
+            listFailed += matchingOpenings.length;
+          } else {
+            listUpdated += matchingOpenings.length;
+          }
+        } catch {
+          listFailed += matchingOpenings.length;
+        }
+
+        if (delayMs > 0) {
+          await sleep(delayMs);
+        }
+      }
+
+      updatedRows += listUpdated;
+      skippedRows += listSkipped;
+      failedRows += listFailed;
+      results.push({ listId: list.id, name: list.name, updated: listUpdated, skipped: listSkipped, failed: listFailed });
+    }
+
+    return res.json({
+      lists: results,
+      updatedRows,
+      skippedRows,
+      failedRows,
+    });
+  } catch (error) {
+    return internalError(req, res, error, "mal_backfill_failed");
   }
 });
 

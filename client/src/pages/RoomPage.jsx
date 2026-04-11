@@ -28,6 +28,19 @@ const PARTY_HEARTBEAT_MS = 20000;
 
 let youtubeIframePromise = null;
 
+function isValidRatingValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return false;
+  if (numeric < 1 || numeric > 10) return false;
+  return Math.abs(numeric * 2 - Math.round(numeric * 2)) < 1e-9;
+}
+
+function formatRatingValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "-";
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1);
+}
+
 function ensureYoutubeIframeApi() {
   if (window.YT?.Player) return Promise.resolve(window.YT);
   if (youtubeIframePromise) return youtubeIframePromise;
@@ -119,11 +132,14 @@ export default function RoomPage() {
 
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [shuffleLoading, setShuffleLoading] = useState(false);
   const [partyConnected, setPartyConnected] = useState(false);
   const [partyError, setPartyError] = useState("");
 
   const [myRating, setMyRating] = useState(0);
+  const [sliderRating, setSliderRating] = useState(5);
   const [currentOpeningVotes, setCurrentOpeningVotes] = useState([]);
+  const [roomUserAverages, setRoomUserAverages] = useState({});
   const [hostUuid, setHostUuid] = useState("");
 
   const [graceUntilTs, setGraceUntilTs] = useState(0);
@@ -441,7 +457,10 @@ export default function RoomPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "ratings", filter: `room_id=eq.${roomId}` },
-        () => fetchCurrentOpeningVotes(),
+        () => {
+          fetchCurrentOpeningVotes();
+          fetchRoomUserAverages();
+        },
       )
       .subscribe();
 
@@ -456,6 +475,10 @@ export default function RoomPage() {
   useEffect(() => {
     fetchCurrentOpeningVotes();
   }, [roomId, currentOpening?.id]);
+
+  useEffect(() => {
+    fetchRoomUserAverages();
+  }, [roomId]);
 
   useEffect(() => {
     if (!identity || !currentOpening?.id) {
@@ -475,7 +498,7 @@ export default function RoomPage() {
         .maybeSingle();
 
       if (!cancelled) {
-        setMyRating(data?.score || 0);
+        setMyRating(Number(data?.score || 0));
       }
     }
 
@@ -485,6 +508,10 @@ export default function RoomPage() {
       cancelled = true;
     };
   }, [roomId, currentOpening?.id, identity?.userId]);
+
+  useEffect(() => {
+    setSliderRating(myRating > 0 ? Number(myRating) : 5);
+  }, [myRating, currentOpening?.id]);
 
   useEffect(() => {
     if (!identity) return;
@@ -934,6 +961,7 @@ export default function RoomPage() {
 
     if (type === "queue:shuffled") {
       setActionLoading(false);
+      setShuffleLoading(false);
 
       if (Array.isArray(payload.openings)) {
         setOpenings(payload.openings);
@@ -964,6 +992,7 @@ export default function RoomPage() {
 
     if (type === "queue:shuffle:error") {
       setActionLoading(false);
+      setShuffleLoading(false);
       showNotice(String(payload.message || "Could not shuffle queue"), "error");
       return;
     }
@@ -1015,7 +1044,7 @@ export default function RoomPage() {
       const userUuid = String(payload.userUuid || "").trim();
       const score = Number(payload.score);
 
-      if (!userUuid || !Number.isInteger(score)) return;
+      if (!userUuid || !isValidRatingValue(score)) return;
 
       setCurrentOpeningVotes((prev) => upsertVote(prev, { user_uuid: userUuid, score }));
       return;
@@ -1247,34 +1276,77 @@ export default function RoomPage() {
     }
   }
 
+  async function fetchRoomUserAverages() {
+    const { data, error } = await supabase
+      .from("ratings")
+      .select("user_uuid,score")
+      .eq("room_id", roomId);
+
+    if (error) return;
+
+    const aggregates = new Map();
+    for (const row of data || []) {
+      const userUuid = String(row?.user_uuid || "").trim();
+      const score = Number(row?.score || 0);
+      if (!userUuid || !Number.isFinite(score)) continue;
+
+      const entry = aggregates.get(userUuid) || { sum: 0, count: 0 };
+      entry.sum += score;
+      entry.count += 1;
+      aggregates.set(userUuid, entry);
+    }
+
+    const next = {};
+    for (const [userUuid, entry] of aggregates.entries()) {
+      if (!entry.count) continue;
+      next[userUuid] = entry.sum / entry.count;
+    }
+
+    setRoomUserAverages(next);
+  }
+
   async function upsertMyPresence() {
     if (!identity) return;
     await apiPost(`/api/rooms/${roomId}/presence`, {});
   }
 
   async function handleRate(score) {
-    if (!currentOpening || !identity || room?.status !== "playing") return;
+    const numericScore = Number(score);
+    if (!currentOpening || !identity || room?.status !== "playing" || !isValidRatingValue(numericScore)) return;
 
     const previous = myRating;
-    setMyRating(score);
+    setMyRating(numericScore);
 
     try {
       await apiPost("/api/rooms/rate", {
         roomId,
         openingId: currentOpening.id,
-        score,
+        score: numericScore,
       });
 
-      setCurrentOpeningVotes((prev) => upsertVote(prev, { user_uuid: identity.userId, score }));
+      setCurrentOpeningVotes((prev) => upsertVote(prev, { user_uuid: identity.userId, score: numericScore }));
       sendPartyEvent("rating:submitted", {
         openingId: currentOpening.id,
-        score,
+        score: numericScore,
       });
     } catch (error) {
       setMyRating(previous);
       showNotice(error.message || "Could not submit rating", "error");
       await fetchCurrentOpeningVotes();
     }
+  }
+
+  function handleRatingSliderChange(nextValue) {
+    const numeric = Number(nextValue);
+    if (!isValidRatingValue(numeric)) return;
+    setSliderRating(numeric);
+  }
+
+  function commitRatingFromSlider(nextValue = sliderRating) {
+    const numeric = Number(nextValue);
+    if (!isValidRatingValue(numeric)) return;
+    if (numeric === Number(myRating || 0)) return;
+    handleRate(numeric);
   }
 
   async function handleStartRoom() {
@@ -1299,6 +1371,7 @@ export default function RoomPage() {
     if (!isHost || !room || openings.length <= 1) return;
 
     setActionLoading(true);
+    setShuffleLoading(true);
     setRoom((prev) => {
       if (!prev) return prev;
       return {
@@ -1514,7 +1587,10 @@ export default function RoomPage() {
             </div>
           )}
 
-          <div className="relative aspect-video lg:aspect-[16/10] xl:aspect-[16/9] bg-black rounded-3xl overflow-hidden shadow-2xl border border-slate-800 group min-h-[280px] md:min-h-[420px] lg:min-h-[520px]">
+          <div
+            className="relative aspect-video lg:aspect-[16/10] xl:aspect-[16/9] bg-black rounded-3xl overflow-hidden shadow-2xl border border-slate-800 group min-h-[280px] md:min-h-[420px] lg:min-h-[520px]"
+            onMouseLeave={() => setVolumePanelOpen(false)}
+          >
             {room?.status === "waiting" ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
                 <div className="w-20 h-20 bg-brand-500/20 rounded-full flex items-center justify-center mb-6 animate-pulse">
@@ -1555,13 +1631,6 @@ export default function RoomPage() {
                     </p>
                   </div>
                 ) : null}
-                {!isHost && (
-                  <div
-                    className="absolute inset-0 z-20"
-                    aria-hidden="true"
-                    title="Only the host can control playback"
-                  />
-                )}
                 {tickNow < graceUntilTs && (
                   <div className="absolute top-3 right-3 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full bg-slate-900/90 border border-slate-700 text-amber-300">
                     Loading sync...
@@ -1572,24 +1641,39 @@ export default function RoomPage() {
                     {playerError}
                   </div>
                 ) : null}
-                <div className="absolute right-3 bottom-3 z-30 flex items-end gap-2">
-                  <div className="relative">
-                    <button
-                      type="button"
-                      className="p-2 rounded-lg border border-slate-700/80 bg-slate-950/85 backdrop-blur hover:bg-slate-900 transition-colors"
-                      onClick={toggleVolumePanel}
-                      aria-label="Open volume control"
-                      aria-expanded={volumePanelOpen}
-                    >
-                      {playerMuted || playerVolume <= 0 ? (
-                        <VolumeX className="w-4 h-4 text-slate-200" />
-                      ) : (
-                        <Volume2 className="w-4 h-4 text-slate-200" />
-                      )}
-                    </button>
+                <div className="absolute inset-0 z-30 pointer-events-none">
+                  <div className="absolute right-3 bottom-3 flex items-end gap-2 opacity-0 translate-y-3 transition-all duration-200 ease-out group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:translate-y-0 pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto">
+                    {!isHost ? (
+                      <div className="max-w-[12rem] rounded-2xl border border-slate-700/80 bg-slate-950/90 backdrop-blur px-3 py-2 shadow-2xl shadow-black/30">
+                        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-300">
+                          Solo el host puede manejar la reproducción
+                        </p>
+                      </div>
+                    ) : null}
 
-                    {volumePanelOpen ? (
-                      <div className="absolute bottom-12 right-0 w-44 rounded-xl border border-slate-700/80 bg-slate-950/95 backdrop-blur p-3 shadow-2xl">
+                    <div className="relative">
+                      <button
+                        type="button"
+                        className="p-2.5 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-lg shadow-[0_14px_40px_rgba(0,0,0,0.38)] transition-all duration-200 ease-out hover:-translate-y-0.5 hover:bg-slate-800/80 hover:shadow-[0_18px_50px_rgba(0,0,0,0.48)] pointer-events-auto"
+                        onClick={toggleVolumePanel}
+                        aria-label="Open volume control"
+                        aria-expanded={volumePanelOpen}
+                        title="Open volume control"
+                      >
+                        {playerMuted || playerVolume <= 0 ? (
+                          <VolumeX className="w-4 h-4 text-slate-200" />
+                        ) : (
+                          <Volume2 className="w-4 h-4 text-slate-200" />
+                        )}
+                      </button>
+
+                      <div
+                        className={`absolute bottom-12 right-0 w-44 rounded-xl border border-slate-700/80 bg-slate-950/95 backdrop-blur p-3 shadow-2xl transition-all duration-200 ease-out ${
+                          volumePanelOpen
+                            ? "opacity-100 translate-y-0 scale-100 pointer-events-auto"
+                            : "opacity-0 translate-y-2 scale-95 pointer-events-none"
+                        }`}
+                      >
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-[10px] uppercase tracking-widest text-slate-400">Volume</span>
                           <button
@@ -1614,14 +1698,8 @@ export default function RoomPage() {
                           {playerMuted ? 0 : playerVolume}%
                         </div>
                       </div>
-                    ) : null}
-                  </div>
-
-                  {!isHost ? (
-                    <div className="rounded-lg border border-slate-700/80 bg-slate-950/85 backdrop-blur px-2 py-1.5">
-                      <p className="text-[10px] text-slate-400 uppercase tracking-wider whitespace-nowrap">Solo host controla play/pausa/seek</p>
                     </div>
-                  ) : null}
+                  </div>
                 </div>
               </>
             )}
@@ -1631,20 +1709,38 @@ export default function RoomPage() {
             <div className="card p-6 flex flex-col md:flex-row items-center justify-between gap-8">
               <div className="flex-1 text-center md:text-left">
                 <h3 className="text-xs font-bold text-slate-500 uppercase tracking-[0.2em] mb-2">Rate this Opening</h3>
-                <div className="flex items-center gap-2 flex-wrap justify-center md:justify-start">
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
-                    <button
-                      key={num}
-                      onClick={() => handleRate(num)}
-                      className={`w-8 h-10 md:w-10 md:h-12 rounded-xl font-black transition-all transform hover:scale-110 active:scale-95 ${
-                        myRating === num
-                          ? "bg-brand-500 text-white shadow-lg shadow-brand-500/40 -translate-y-1"
-                          : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200"
-                      }`}
-                    >
-                      {num}
-                    </button>
-                  ))}
+                <div className="max-w-xl mx-auto md:mx-0">
+                  <div className="flex items-center justify-between mb-2 text-[11px] uppercase tracking-[0.18em] text-slate-400 font-bold">
+                    <span>1</span>
+                    <span className="text-brand-300 tabular-nums">{myRating > 0 ? formatRatingValue(myRating) : "-"}</span>
+                    <span>10</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    step={0.5}
+                    value={sliderRating}
+                    onChange={(event) => handleRatingSliderChange(event.target.value)}
+                    onMouseUp={(event) => commitRatingFromSlider(event.currentTarget.value)}
+                    onTouchEnd={(event) => commitRatingFromSlider(event.currentTarget.value)}
+                    onBlur={(event) => commitRatingFromSlider(event.currentTarget.value)}
+                    onKeyUp={(event) => {
+                      if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") {
+                        commitRatingFromSlider(event.currentTarget.value);
+                      }
+                    }}
+                    className="w-full h-2 rounded-full bg-slate-800 accent-brand-500 cursor-pointer"
+                    aria-label="Rate current opening from 1 to 10 in steps of 0.5"
+                  />
+                  <div className="mt-2 grid grid-cols-10 text-[10px] text-slate-500 font-bold tabular-nums select-none">
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+                      <div key={num} className="flex flex-col items-center justify-start gap-1">
+                        <span className="block w-px h-1.5 bg-slate-600/80" aria-hidden="true" />
+                        <span>{num}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -1691,11 +1787,12 @@ export default function RoomPage() {
                   const isActive = activeUserSet.has(participant.user_uuid);
                   const voted = hasVoted(participant.user_uuid);
                   const score = userScoreMap[participant.user_uuid];
+                  const roomAvg = Number(roomUserAverages[participant.user_uuid]);
 
                   return (
                     <div
                       key={participant.id}
-                      className={`flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800 transition-opacity ${
+                      className={`group relative flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800 transition-opacity ${
                         isActive ? "opacity-100" : "opacity-55"
                       }`}
                     >
@@ -1734,7 +1831,11 @@ export default function RoomPage() {
                       </div>
 
                       <div className="min-w-[2rem] text-right text-sm font-black text-brand-300">
-                        {voted ? score : isActive ? "-" : ""}
+                        {voted ? formatRatingValue(score) : isActive ? "-" : ""}
+                      </div>
+
+                      <div className="pointer-events-none absolute right-2 top-2 z-20 rounded-lg border border-slate-700/80 bg-slate-950/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-200 opacity-0 translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:translate-y-0">
+                        Average rating: {Number.isFinite(roomAvg) ? roomAvg.toFixed(2) : "-"}
                       </div>
                     </div>
                   );
@@ -1751,7 +1852,7 @@ export default function RoomPage() {
                       disabled={actionLoading || openings.length <= 1}
                       title="Shuffle the queue"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${actionLoading ? "animate-spin" : ""}`} />
+                      <RefreshCw className={`w-3.5 h-3.5 ${shuffleLoading ? "animate-spin" : ""}`} />
                       Shuffle queue
                     </button>
                   ) : null}
@@ -1786,17 +1887,6 @@ export default function RoomPage() {
                               {isCurrent && <CheckCircle2 className="w-4 h-4 text-brand-400 shrink-0" />}
                             </p>
                             <p className="text-[10px] text-slate-500 truncate">{opening.opening_label}</p>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {opening.youtube_video_id ? (
-                              <span className="text-[8px] uppercase tracking-widest text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 rounded-full px-2 py-1">
-                                Video
-                              </span>
-                            ) : (
-                              <span className="text-[8px] uppercase tracking-widest text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded-full px-2 py-1">
-                                No video
-                              </span>
-                            )}
                           </div>
                         </div>
                         {!isPlayable && (
