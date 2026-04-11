@@ -1,16 +1,36 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiGet, apiPost } from "../lib/api";
-import { clearIdentity, getDefaultAvatar, getIdentity, patchIdentityUser, saveIdentity } from "../lib/identity";
-import { Plus, RefreshCw, User, Layout, Hash, Globe, Lock, AlertTriangle, CheckCircle2, X } from "lucide-react";
+import { clearIdentity, getDefaultAvatar, getIdentity, saveIdentity } from "../lib/identity";
+import {
+  UI_TRANSITIONS,
+  markPendingRoomTransition,
+  navigateWithTransition,
+  runViewTransition,
+} from "../lib/viewTransition";
+import {
+  Plus,
+  RefreshCw,
+  User,
+  Layout,
+  Hash,
+  Globe,
+  Lock,
+  AlertTriangle,
+  CheckCircle2,
+  X,
+  ArrowRight,
+  LogIn,
+  PartyPopper,
+  Sparkles,
+  Ticket,
+  Music2,
+} from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
 export default function LobbyPage() {
   const navigate = useNavigate();
   const [identity, setIdentity] = useState(getIdentity());
-
-  const [displayName, setDisplayName] = useState(identity?.displayName || "");
-  const [avatarUrl, setAvatarUrl] = useState(identity?.avatarUrl || "");
   const [lists, setLists] = useState([]);
   const [rooms, setRooms] = useState([]);
 
@@ -19,8 +39,14 @@ export default function LobbyPage() {
   const [selectedList, setSelectedList] = useState("");
   const [isPublic, setIsPublic] = useState(true);
   const [inviteCode, setInviteCode] = useState("");
+  const [showQuickJoin, setShowQuickJoin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [uiNotice, setUiNotice] = useState(null);
+  const [createTriggerKey, setCreateTriggerKey] = useState("");
+  const [createModalOrigin, setCreateModalOrigin] = useState({ x: 0, y: 18 });
+
+  const quickJoinCardRef = useRef(null);
+  const createTriggerResetTimerRef = useRef(null);
 
   useEffect(() => {
     loadPublicRooms();
@@ -48,6 +74,76 @@ export default function LobbyPage() {
     };
   }, [uiNotice]);
 
+  useEffect(() => {
+    return () => {
+      if (createTriggerResetTimerRef.current) {
+        window.clearTimeout(createTriggerResetTimerRef.current);
+      }
+    };
+  }, []);
+
+  function armElementTransition(element, transitionName) {
+    if (!element || !transitionName) return;
+
+    element.style.viewTransitionName = transitionName;
+    window.setTimeout(() => {
+      if (element.style.viewTransitionName === transitionName) {
+        element.style.viewTransitionName = "";
+      }
+    }, 900);
+  }
+
+  function queueCreateTriggerReset() {
+    if (createTriggerResetTimerRef.current) {
+      window.clearTimeout(createTriggerResetTimerRef.current);
+    }
+
+    createTriggerResetTimerRef.current = window.setTimeout(() => {
+      setCreateTriggerKey("");
+    }, 520);
+  }
+
+  function captureCreateModalOrigin(element) {
+    const rect = element?.getBoundingClientRect?.();
+    if (!rect) {
+      setCreateModalOrigin({ x: 0, y: 18 });
+      return;
+    }
+
+    setCreateModalOrigin({
+      x: rect.left + rect.width / 2 - window.innerWidth / 2,
+      y: rect.top + rect.height / 2 - window.innerHeight / 2,
+    });
+  }
+
+  function openCreateModal(triggerKey, triggerElement) {
+    if (createTriggerResetTimerRef.current) {
+      window.clearTimeout(createTriggerResetTimerRef.current);
+      createTriggerResetTimerRef.current = null;
+    }
+
+    captureCreateModalOrigin(triggerElement);
+    setCreateTriggerKey(triggerKey || "");
+    armElementTransition(triggerElement, UI_TRANSITIONS.CREATE_ROOM_FLOW);
+
+    runViewTransition(() => {
+      setShowCreateModal(true);
+    });
+  }
+
+  function closeCreateModal() {
+    runViewTransition(() => {
+      setShowCreateModal(false);
+    });
+    queueCreateTriggerReset();
+  }
+
+  function navigateToRoom(roomId, transitionName, sourceElement) {
+    markPendingRoomTransition(transitionName);
+    armElementTransition(sourceElement, transitionName);
+    navigateWithTransition(navigate, `/room/${roomId}`);
+  }
+
   async function syncIdentityWithServer() {
     const current = getIdentity();
     if (!current?.token) return;
@@ -60,8 +156,6 @@ export default function LobbyPage() {
         user: data.user,
       });
       setIdentity(merged);
-      setDisplayName(merged?.displayName || "");
-      setAvatarUrl(merged?.avatarUrl || "");
     } catch {
       clearIdentity();
       setIdentity(null);
@@ -105,35 +199,10 @@ export default function LobbyPage() {
   function ensureIdentity() {
     const current = getIdentity();
     if (!current?.token || !current?.userId) {
-      showNotice("Login or register first", "warning");
+      showNotice("Sign in first to host rooms. You can still join with an invite code.", "warning");
       return null;
     }
     return current;
-  }
-
-  async function saveProfile() {
-    const currentIdentity = ensureIdentity();
-    if (!currentIdentity) return;
-
-    const trimmed = displayName.trim();
-    if (!trimmed) {
-      showNotice("Display name is required", "warning");
-      return;
-    }
-
-    try {
-      const data = await apiPost("/api/auth/profile", {
-        displayName: trimmed,
-        avatarUrl,
-      });
-      const saved = patchIdentityUser(data.user);
-      setIdentity(saved);
-      setAvatarUrl(saved?.avatarUrl || "");
-      setDisplayName(saved?.displayName || trimmed);
-      showNotice("Profile saved", "success");
-    } catch (err) {
-      showNotice(err.message || "Failed to save profile", "error");
-    }
   }
 
   async function createRoom() {
@@ -148,20 +217,26 @@ export default function LobbyPage() {
         isPublic,
       });
 
-      navigate(`/room/${data.room.id}`);
+      markPendingRoomTransition(UI_TRANSITIONS.CREATE_ROOM_FLOW);
+      navigateWithTransition(navigate, `/room/${data.room.id}`);
     } catch (err) {
-      showNotice(err.message || "Failed to create room", "error");
+      const message = String(err?.message || "");
+      if (message.toLowerCase().includes("unauthorized")) {
+        showNotice("Your session expired. Sign in again, then create the room.", "error");
+        return;
+      }
+      showNotice("Couldn't create the room. Try a different room name or refresh and try again.", "error");
     }
   }
 
-  async function joinByCode() {
+  async function joinByCode(sourceElement) {
     const currentIdentity = ensureIdentity();
     if (!currentIdentity || !inviteCode.trim()) return;
     try {
       const data = await apiGet(`/api/rooms/by-code/${inviteCode.trim().toUpperCase()}`);
-      navigate(`/room/${data.room.id}`);
+      navigateToRoom(data.room.id, UI_TRANSITIONS.QUICK_JOIN_STAGE, sourceElement || quickJoinCardRef.current);
     } catch {
-      showNotice("Invalid room code", "error");
+      showNotice("That invite code doesn't match an active room. Check the code and try again.", "error");
     }
   }
 
@@ -187,20 +262,49 @@ export default function LobbyPage() {
 
       await loadLists();
       setSelectedList(saved.list.id);
+      showNotice("Sample list ready. You can create your room now.", "success");
     } catch {
-      showNotice("Could not generate preset list", "error");
+      showNotice("Couldn't create the sample list right now. Try again in a moment.", "error");
     }
   }
 
   function showNotice(message, tone = "error") {
-    setUiNotice({ message: String(message || "Unexpected error"), tone });
+    setUiNotice({ message: String(message || "Something unexpected happened. Please try again."), tone });
   }
 
+  const signedIn = Boolean(identity?.token && identity?.userId);
+  const accountDisplayName = identity?.displayName || "Guest";
+  const accountAvatarUrl = identity?.avatarUrl || getDefaultAvatar(accountDisplayName);
+
   return (
-    <div className="max-w-6xl mx-auto px-4 py-12">
+    <div className="relative mx-auto max-w-7xl px-4 pb-12 pt-24 md:px-6 md:pb-14 md:pt-28">
+      <button
+        type="button"
+        className="fixed right-4 top-4 z-40 inline-flex items-center gap-3 rounded-2xl border border-slate-600/90 bg-slate-900/95 px-3 py-2 text-left shadow-2xl shadow-slate-950/70 backdrop-blur-sm transition hover:-translate-y-0.5 hover:border-brand-300/60 hover:bg-slate-900 md:right-6 md:top-6"
+        onClick={() => navigate("/auth")}
+      >
+        <img
+          src={accountAvatarUrl}
+          alt="Your avatar"
+          className="h-10 w-10 rounded-full border border-slate-700 object-cover"
+          referrerPolicy="no-referrer"
+        />
+        <span className="min-w-0 leading-tight">
+          <span className="block text-xs font-bold uppercase tracking-[0.12em] text-brand-200">Account</span>
+          <span className="block truncate text-sm font-semibold text-slate-100">
+            {signedIn ? "Manage profile" : "Sign in"}
+          </span>
+        </span>
+        {signedIn ? (
+          <User className="h-4 w-4 shrink-0 text-brand-300" />
+        ) : (
+          <LogIn className="h-4 w-4 shrink-0 text-brand-300" />
+        )}
+      </button>
+
       {uiNotice ? (
         <div
-          className={`mb-4 text-sm px-4 py-3 rounded-xl border flex items-start gap-3 animate-fade-in ${
+          className={`mb-6 max-w-3xl text-sm px-4 py-3 rounded-xl border flex items-start gap-3 animate-fade-in ${
             uiNotice.tone === "success"
               ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
               : uiNotice.tone === "warning"
@@ -217,7 +321,7 @@ export default function LobbyPage() {
           <span className="flex-1">{uiNotice.message}</span>
           <button
             type="button"
-            className="p-1 rounded-md hover:bg-black/20 transition-colors"
+            className="p-1 rounded-md hover:bg-slate-900/70 transition-colors"
             onClick={() => setUiNotice(null)}
             aria-label="Close notice"
           >
@@ -226,174 +330,208 @@ export default function LobbyPage() {
         </div>
       ) : null}
 
-      <header className="mb-12 text-center">
-        <motion.div
-          initial={{ scale: 0.9, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className="inline-block mb-4"
-        >
-          <span className="pill bg-brand-500/10 text-brand-400 border-brand-500/20 px-4 py-1.5 text-sm">
-            Anime Opening Rater
-          </span>
-        </motion.div>
-        <h1 className="text-5xl font-extrabold tracking-tight mb-4 bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
-          Watch. Rate. Rank.
-        </h1>
-        <p className="text-slate-400 text-lg max-w-2xl mx-auto">
-          Create a room, invite your friends, and decide the best anime opening together in real-time.
-        </p>
-      </header>
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Left Column */}
-        <div className="lg:col-span-4 space-y-6">
-          <section className="card">
-            <div className="flex items-center justify-between gap-3 mb-4">
-              <div className="flex items-center gap-2">
-                <User className="w-5 h-5 text-brand-400" />
-                <h3 className="text-lg font-bold">Account</h3>
-              </div>
-              <button className="btn-secondary" onClick={() => navigate("/auth")}>
-                Login / Register
-              </button>
-            </div>
-            <p className="muted mb-4">Only your visible name and avatar are managed here.</p>
-
-            <div className="flex items-center gap-3 mb-4">
-              <img
-                src={avatarUrl.trim() || getDefaultAvatar(displayName)}
-                alt="Avatar preview"
-                className="w-12 h-12 rounded-full object-cover border border-slate-700 bg-slate-900"
-                referrerPolicy="no-referrer"
-              />
-              <div className="text-xs text-slate-500">
-                Your avatar appears in the room and chat.
-              </div>
-            </div>
-            <div className="relative">
-              <input
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="Display name"
-                className="pl-10"
-              />
-              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-            </div>
-            <input
-              value={avatarUrl}
-              onChange={(e) => setAvatarUrl(e.target.value)}
-              placeholder="Avatar URL (optional)"
-              className="mt-3"
-            />
-            <button
-              className="btn-secondary w-full mt-3"
-              onClick={saveProfile}
-              disabled={!identity || !displayName.trim()}
-            >
-              Save profile
-            </button>
-          </section>
-
-          <section className="card">
-            <div className="flex items-center gap-2 mb-4">
-              <Plus className="w-5 h-5 text-brand-400" />
-              <h3 className="text-lg font-bold">Start Session</h3>
-            </div>
-            <div className="space-y-3">
-              <button 
-                className="btn-primary w-full flex items-center justify-center gap-2"
-                onClick={() => setShowCreateModal(true)} 
-                disabled={!identity}
-              >
-                <Plus className="w-4 h-4" />
-                Create New Room
-              </button>
-              <button 
-                className="btn-secondary w-full flex items-center justify-center gap-2"
-                onClick={() => navigate("/create-list")}
-                disabled={!identity}
-              >
-                <Layout className="w-4 h-4" />
-                Create Custom List
-              </button>
-            </div>
-          </section>
-
-          <section className="card">
-            <div className="flex items-center gap-2 mb-4">
-              <Hash className="w-5 h-5 text-brand-400" />
-              <h3 className="text-lg font-bold">Join Private Room</h3>
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={inviteCode}
-                onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
-                placeholder="Invite code"
-                className="font-mono uppercase"
-              />
-              <button className="btn-secondary" onClick={joinByCode}>Join</button>
-            </div>
-          </section>
+      <section className="relative overflow-hidden rounded-[32px] border border-slate-700/70 bg-slate-900/55 px-6 py-7 md:px-8 md:py-8">
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute -left-20 top-12 h-48 w-48 rounded-full bg-brand-500/10 blur-3xl" />
+          <div className="absolute right-0 top-0 h-60 w-60 rounded-full bg-amber-400/8 blur-3xl" />
+          <div className="absolute inset-x-12 bottom-4 h-px bg-gradient-to-r from-transparent via-slate-500/35 to-transparent" />
         </div>
 
-        {/* Right Column */}
-        <div className="lg:col-span-8">
-          <section className="card h-full">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-2">
-                <Globe className="w-5 h-5 text-brand-400" />
-                <h3 className="text-lg font-bold">Active Public Rooms</h3>
-              </div>
-              <button 
-                className="btn-ghost flex items-center gap-2 text-sm" 
-                onClick={loadPublicRooms}
-                disabled={loading}
+        <div className="relative grid gap-8 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
+          <div className="space-y-5">
+            <p className="inline-flex items-center gap-2 rounded-full border border-brand-700/60 bg-brand-950/35 px-3 py-1 text-xs font-bold uppercase tracking-[0.16em] text-brand-200">
+              <PartyPopper className="h-3.5 w-3.5" />
+              Opening afterparty
+            </p>
+            <h1 className="max-w-3xl text-4xl font-black leading-[0.94] text-slate-50 sm:text-5xl md:text-6xl">
+              Bring snacks.
+              <br />
+              We&apos;ll bring the bad takes.
+            </h1>
+            <p className="max-w-[58ch] text-base leading-relaxed text-slate-300 md:text-lg">
+              A night room for dramatic rankings, loud opinions, and the one opening someone will defend like court
+              evidence.
+            </p>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                className="btn-primary inline-flex items-center gap-2"
+                onClick={(event) => {
+                  if (!signedIn) {
+                    navigate("/auth");
+                    return;
+                  }
+                  openCreateModal("hero-start-room", event.currentTarget);
+                }}
+                style={
+                  createTriggerKey === "hero-start-room"
+                    ? { viewTransitionName: UI_TRANSITIONS.CREATE_ROOM_FLOW }
+                    : undefined
+                }
               >
-                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                <Plus className="h-4 w-4" />
+                {signedIn ? "Start Room" : "Sign in to Start"}
+              </button>
+
+              <button
+                className="btn-secondary inline-flex items-center gap-2"
+                onClick={() => setShowQuickJoin((prev) => !prev)}
+                aria-expanded={showQuickJoin}
+              >
+                <Hash className="h-4 w-4" />
+                {showQuickJoin ? "Hide Code Entry" : "Have a Code?"}
+              </button>
+
+              {signedIn ? (
+                <button className="btn-ghost inline-flex items-center gap-2" onClick={() => navigate("/create-list")}> 
+                  <Layout className="h-4 w-4" />
+                  Create List
+                </button>
+              ) : null}
+            </div>
+
+            {showQuickJoin ? (
+              <div ref={quickJoinCardRef} className="max-w-xl rounded-2xl border border-slate-700/80 bg-slate-950/40 p-4">
+                <p className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-slate-400">Join with invite code</p>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+                    placeholder="Enter invite code"
+                    className="font-mono uppercase tracking-[0.12em]"
+                  />
+                  <button
+                    className="btn-secondary inline-flex items-center justify-center gap-2 sm:w-auto"
+                    onClick={(event) => joinByCode(event.currentTarget)}
+                  >
+                    Join
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="relative">
+            <div className="absolute -left-2 top-4 h-24 w-24 rounded-full bg-brand-500/12 blur-2xl" />
+            <div className="absolute right-2 top-0 h-20 w-20 rounded-full bg-amber-400/10 blur-2xl" />
+
+            <div className="relative rotate-[-1.5deg] rounded-[30px] border border-brand-700/45 bg-gradient-to-br from-brand-950/45 via-slate-900/70 to-slate-950/60 p-4 shadow-[0_30px_80px_rgba(0,0,0,0.45)]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-brand-200/80">Tonight&apos;s vibe</p>
+                  <p className="mt-2 text-2xl font-black text-slate-50">Maximum goblin diplomacy.</p>
+                </div>
+                <div className="rounded-full border border-slate-700 bg-slate-950/50 px-3 py-1 text-xs font-semibold text-slate-300">
+                  Bring snacks
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-slate-700/80 bg-slate-950/35 p-4">
+                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Mood check</p>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-200">
+                    One person is already prepared to say, &quot;No, actually, this opening is genius.&quot;
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-slate-700/80 bg-slate-950/35 p-4">
+                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Audio warning</p>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-200">
+                    Volume may spike when the first bad opinion lands.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <span className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-950/35 px-3 py-1.5 text-sm text-slate-200">
+                  <Sparkles className="h-4 w-4 text-brand-300" />
+                  hot takes loaded
+                </span>
+                <span className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-950/35 px-3 py-1.5 text-sm text-slate-200">
+                  <Ticket className="h-4 w-4 text-amber-300" />
+                  invite codes behaving suspiciously
+                </span>
+                <span className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-950/35 px-3 py-1.5 text-sm text-slate-200">
+                  <Music2 className="h-4 w-4 text-brand-300" />
+                  room noise: politely unhinged
+                </span>
+              </div>
+            </div>
+
+            <div className="absolute -bottom-5 right-6 rotate-[6deg] rounded-2xl border border-slate-700/80 bg-slate-950/85 px-4 py-3 shadow-[0_18px_40px_rgba(0,0,0,0.45)]">
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Guest note</p>
+              <p className="mt-1 text-sm font-semibold text-slate-100">Mute button sold separately.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <div className="rounded-[30px] border border-slate-700/70 bg-slate-900/68 p-6">
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-xl font-black text-slate-100">Live Rooms ({rooms.length})</h2>
+              <button className="btn-ghost inline-flex items-center gap-2 text-sm" onClick={loadPublicRooms} disabled={loading}>
+                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                 Refresh
               </button>
             </div>
 
             {rooms.length === 0 ? (
-              <div className="empty-state">
-                <Globe className="w-12 h-12 text-slate-800 mx-auto mb-4" />
-                <p>No public rooms active. Be the first to create one!</p>
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 text-center">
+                <p className="text-slate-300">No live rooms right now.</p>
+                <div className="mt-4">
+                  <button
+                    className="btn-primary"
+                    onClick={(event) => {
+                      if (!signedIn) {
+                        navigate("/auth");
+                        return;
+                      }
+                      openCreateModal("empty-create-room", event.currentTarget);
+                    }}
+                    style={
+                      createTriggerKey === "empty-create-room"
+                        ? { viewTransitionName: UI_TRANSITIONS.CREATE_ROOM_FLOW }
+                        : undefined
+                    }
+                  >
+                    {signedIn ? "Start a public room" : "Sign in to start a room"}
+                  </button>
+                </div>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {rooms.map((room) => (
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-6">
+                {rooms.map((room, idx) => (
+                  <button
                     key={room.id}
-                    className="sub-card text-left hover:border-brand-500/50 transition-colors group"
-                    onClick={() => {
+                    className={`sub-card w-full text-left ${
+                      idx % 4 === 0
+                        ? "md:col-span-2 lg:col-span-4"
+                        : idx % 4 === 1
+                          ? "lg:col-span-2"
+                          : "lg:col-span-3"
+                    }`}
+                    onClick={(event) => {
                       const currentIdentity = ensureIdentity();
                       if (!currentIdentity) return;
-                      navigate(`/room/${room.id}`);
+                      navigateToRoom(room.id, UI_TRANSITIONS.ROOM_ROUTE_STAGE, event.currentTarget);
                     }}
                   >
-                    <div className="flex justify-between items-start mb-2">
-                      <strong className="text-lg group-hover:text-brand-400 transition-colors">{room.name}</strong>
-                      <span className="pill text-[10px] py-0.5">Public</span>
+                    <p className="mb-1 text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Room {String(idx + 1).padStart(2, "0")}</p>
+                    <div className="flex items-start justify-between gap-3">
+                      <strong className={`line-clamp-2 font-bold text-slate-100 ${idx % 4 === 0 ? "text-lg" : "text-base"}`}>
+                        {room.name}
+                      </strong>
+                      <span className="text-xs font-mono tracking-[0.08em] text-brand-300">{room.invite_code}</span>
                     </div>
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2 text-sm text-slate-400">
-                        <Hash className="w-3 h-3" />
-                        <span>Code: {room.invite_code}</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm text-slate-400">
-                        <Layout className="w-3 h-3" />
-                        <span>{room.lists?.name || "Custom list"}</span>
-                      </div>
-                    </div>
-                  </motion.button>
+                    <p className="mt-1 truncate text-xs text-slate-400">{room.lists?.name || "Custom list"}</p>
+                  </button>
                 ))}
               </div>
             )}
-          </section>
         </div>
-      </div>
+      </section>
 
       {/* Create Room Modal */}
       <AnimatePresence>
@@ -404,29 +542,40 @@ export default function LobbyPage() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
-              onClick={() => setShowCreateModal(false)}
+              onClick={closeCreateModal}
             />
             <motion.div
-              initial={{ scale: 0.9, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="card w-full max-w-md relative z-10"
+              initial={{
+                scale: 0.86,
+                opacity: 0,
+                x: createModalOrigin.x * 0.18,
+                y: createModalOrigin.y * 0.18 + 18,
+              }}
+              animate={{ scale: 1, opacity: 1, x: 0, y: 0 }}
+              exit={{ scale: 0.92, opacity: 0, y: 20 }}
+              transition={{ type: "spring", damping: 24, stiffness: 320, mass: 0.85 }}
+              className="card w-full max-w-md relative z-10 ring-1 ring-brand-500/30"
+              style={
+                createTriggerKey
+                  ? { viewTransitionName: UI_TRANSITIONS.CREATE_ROOM_FLOW }
+                  : undefined
+              }
             >
-              <h3 className="text-xl font-bold mb-6">Create New Room</h3>
+              <h3 className="text-2xl font-bold mb-6 text-brand-300">Create Room</h3>
               <div className="space-y-4">
                 <div className="space-y-2">
                   <label className="text-sm text-slate-400">Room Name</label>
                   <input
                     value={newRoomName}
                     onChange={(e) => setNewRoomName(e.target.value)}
-                    placeholder="e.g. Anime Night with Friends"
+                    placeholder="e.g. Friday OP Showdown"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-sm text-slate-400">Select Opening List</label>
+                  <label className="text-sm text-slate-400">Opening List</label>
                   <select value={selectedList} onChange={(e) => setSelectedList(e.target.value)}>
-                    <option value="">Choose a list...</option>
+                    <option value="">Select a list</option>
                     {lists.map((list) => (
                       <option key={list.id} value={list.id}>{list.name}</option>
                     ))}
@@ -436,7 +585,7 @@ export default function LobbyPage() {
                       className="text-xs text-brand-400 hover:text-brand-300 underline" 
                       onClick={generateSampleList}
                     >
-                      Generate Top MAL sample list
+                      Add a ready-to-play sample list
                     </button>
                   )}
                 </div>
@@ -451,18 +600,18 @@ export default function LobbyPage() {
                   />
                   <label htmlFor="is-public" className="text-sm font-medium flex items-center gap-2 cursor-pointer">
                     {isPublic ? <Globe className="w-4 h-4 text-brand-400" /> : <Lock className="w-4 h-4 text-slate-400" />}
-                    Public room (visible in lobby)
+                    Show this room in the public lobby
                   </label>
                 </div>
 
                 <div className="flex gap-3 pt-4">
-                  <button className="btn-ghost flex-1" onClick={() => setShowCreateModal(false)}>Cancel</button>
+                  <button className="btn-ghost flex-1" onClick={closeCreateModal}>Cancel</button>
                   <button 
                     className="btn-primary flex-1" 
                     onClick={createRoom} 
                     disabled={!newRoomName.trim() || !selectedList}
                   >
-                    Launch Room
+                    Create Room
                   </button>
                 </div>
               </div>

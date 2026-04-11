@@ -4,6 +4,7 @@ import { apiDelete, apiPost } from "../lib/api";
 import { APP_ENV } from "../lib/env";
 import { getDefaultAvatar, getIdentity } from "../lib/identity";
 import { supabase } from "../lib/supabase";
+import { clearPendingRoomTransition, readPendingRoomTransition } from "../lib/viewTransition";
 import {
   Users,
   Play,
@@ -11,7 +12,7 @@ import {
   Volume2,
   VolumeX,
   Trophy,
-  Settings,
+  Trash2,
   Star,
   CheckCircle2,
   AlertTriangle,
@@ -153,6 +154,9 @@ export default function RoomPage() {
   const [volumePanelOpen, setVolumePanelOpen] = useState(false);
   const [playerError, setPlayerError] = useState("");
   const [uiNotice, setUiNotice] = useState(null);
+  const [participantsExpanded, setParticipantsExpanded] = useState(false);
+  const [queueExpanded, setQueueExpanded] = useState(false);
+  const [hostToolsExpanded, setHostToolsExpanded] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState({
     open: false,
     title: "",
@@ -160,6 +164,7 @@ export default function RoomPage() {
     confirmLabel: "Confirm",
     danger: false,
   });
+  const [entryTransitionName, setEntryTransitionName] = useState(() => readPendingRoomTransition());
 
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
@@ -183,6 +188,22 @@ export default function RoomPage() {
 
   // Guard against host replay loops: state changes caused by remote sync should not be re-broadcast.
   const remotePlayerMutationUntilRef = useRef(0);
+
+  useEffect(() => {
+    if (!entryTransitionName) {
+      clearPendingRoomTransition();
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setEntryTransitionName("");
+      clearPendingRoomTransition();
+    }, 760);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [entryTransitionName]);
 
   useEffect(() => {
     roomRef.current = room;
@@ -344,6 +365,30 @@ export default function RoomPage() {
   );
 
   const connectedCount = connectedParticipants.length;
+
+  const currentOpeningIndex = room?.current_opening_index ?? -1;
+
+  const featuredQueue = useMemo(() => {
+    if (openings.length === 0) return [];
+    if (currentOpeningIndex < 0) return openings.slice(0, 3);
+    return openings.filter((opening) => {
+      return (
+        opening.order_index === currentOpeningIndex
+        || (opening.order_index > currentOpeningIndex && opening.order_index <= currentOpeningIndex + 2)
+      );
+    });
+  }, [openings, currentOpeningIndex]);
+
+  const hiddenQueue = useMemo(() => {
+    if (openings.length === 0) return [];
+    if (currentOpeningIndex < 0) return openings.slice(3);
+    return openings.filter((opening) => {
+      return !(
+        opening.order_index === currentOpeningIndex
+        || (opening.order_index > currentOpeningIndex && opening.order_index <= currentOpeningIndex + 2)
+      );
+    });
+  }, [openings, currentOpeningIndex]);
 
   const openingAverage = useMemo(() => {
     const totalVotes = currentOpeningVotes.length;
@@ -1499,7 +1544,10 @@ export default function RoomPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
+      <div
+        className="flex items-center justify-center min-h-[100dvh]"
+        style={entryTransitionName ? { viewTransitionName: entryTransitionName } : undefined}
+      >
         <RefreshCw className="animate-spin text-brand-500" />
       </div>
     );
@@ -1507,10 +1555,10 @@ export default function RoomPage() {
 
   return (
     <>
-      <div className="max-w-[1700px] mx-auto px-3 md:px-4 py-6 md:py-8 h-[calc(100vh-1.5rem)] flex flex-col">
+      <div className="max-w-[1700px] mx-auto px-3 md:px-4 lg:px-6 py-4 md:py-6 lg:py-8 min-h-[100dvh] flex flex-col gap-4 md:gap-6">
       {uiNotice ? (
         <div
-          className={`mb-4 text-sm px-4 py-3 rounded-xl border flex items-start gap-3 animate-fade-in ${
+          className={`text-sm px-4 py-3.5 rounded-xl border flex items-start gap-3 animate-fade-in ${
             uiNotice.tone === "warning"
               ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
               : "border-rose-500/40 bg-rose-500/10 text-rose-100"
@@ -1530,21 +1578,24 @@ export default function RoomPage() {
         </div>
       ) : null}
 
-      <header className="flex items-center justify-between mb-8 shrink-0 gap-4">
-        <div className="flex items-center gap-4 min-w-0">
+      <header className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] items-start md:items-center shrink-0 gap-3 md:gap-4">
+        <div
+          className="flex items-center gap-4 min-w-0"
+          style={entryTransitionName ? { viewTransitionName: entryTransitionName } : undefined}
+        >
           <Link to="/" className="p-2 hover:bg-slate-800 rounded-lg transition-colors shrink-0">
             <ChevronLeft className="w-6 h-6" />
           </Link>
           <div className="min-w-0">
-            <h1 className="text-2xl font-black truncate">{room?.name}</h1>
-            <p className="text-xs text-slate-500 flex items-center gap-2 uppercase tracking-widest">
+            <h1 className="text-xl sm:text-2xl font-black truncate">{room?.name}</h1>
+            <p className="text-xs text-slate-500 flex items-center gap-2 uppercase tracking-[0.12em]">
               <Star className="w-3 h-3 text-brand-400" />
               {room?.lists?.name}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-full text-xs font-bold text-slate-300">
             <Users className="w-3 h-3" />
             {ratedConnectedCount}/{connectedCount} rated
@@ -1560,28 +1611,40 @@ export default function RoomPage() {
               className="p-2 hover:bg-slate-800 rounded-lg transition-colors"
               title="Delete room"
               onClick={handleDeleteRoom}
+              aria-label="Delete room"
             >
-              <Settings className="w-5 h-5" />
+              <Trash2 className="w-5 h-5" />
             </button>
           )}
         </div>
       </header>
 
+      <div className="grid grid-cols-2 gap-2 md:hidden shrink-0">
+        <div className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-900/80 border border-slate-800 rounded-xl text-xs font-bold text-slate-200">
+          <Users className="w-3 h-3" />
+          {ratedConnectedCount}/{connectedCount} rated
+        </div>
+        <div className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-900/80 border border-slate-800 rounded-xl text-xs font-bold text-slate-300">
+          <span className={`w-2 h-2 rounded-full ${partyConnected ? "bg-emerald-400" : "bg-slate-500"}`} />
+          {partyConnected ? "Realtime" : "Reconnecting"}
+        </div>
+      </div>
+
       {partyError ? (
-        <div className="mb-4 text-xs px-3 py-2 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-200">
+        <div className="text-sm px-3.5 py-2.5 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-100">
           {partyError}
         </div>
       ) : null}
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-8 min-h-0">
-        <div className="lg:col-span-9 flex flex-col gap-6 min-h-0">
+      <div className="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.9fr)] gap-4 md:gap-6 xl:gap-8 min-h-0">
+        <div className="flex flex-col gap-4 md:gap-6 min-h-0 xl:min-w-0">
           {room?.status === "playing" && currentOpening && (
-            <div className="flex items-center justify-between px-4 py-2 bg-slate-900/40 border border-slate-800 rounded-2xl">
+            <div className="flex items-center justify-between px-4 md:px-5 py-2.5 bg-slate-900/40 border border-slate-800 rounded-2xl">
               <div>
-                <h3 className="text-sm font-bold">{currentOpening.anime_title}</h3>
-                <p className="text-[10px] text-slate-400 uppercase tracking-widest">{currentOpening.opening_label}</p>
+                <h3 className="text-base md:text-lg font-bold">{currentOpening.anime_title}</h3>
+                <p className="text-xs text-slate-400 uppercase tracking-[0.12em]">{currentOpening.opening_label}</p>
               </div>
-              <div className="bg-brand-500 px-3 py-1 rounded-full text-[10px] font-black shadow-lg">
+              <div className="bg-brand-500 px-3 py-1 rounded-full text-xs font-black shadow-lg">
                 {room?.current_opening_index + 1} / {openings.length}
               </div>
             </div>
@@ -1632,7 +1695,7 @@ export default function RoomPage() {
                   </div>
                 ) : null}
                 {tickNow < graceUntilTs && (
-                  <div className="absolute top-3 right-3 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full bg-slate-900/90 border border-slate-700 text-amber-300">
+                  <div className="absolute top-3 right-3 text-xs font-black uppercase tracking-[0.12em] px-3 py-1 rounded-full bg-slate-900/90 border border-slate-700 text-amber-300">
                     Loading sync...
                   </div>
                 )}
@@ -1645,7 +1708,7 @@ export default function RoomPage() {
                   <div className="absolute right-3 bottom-3 flex items-end gap-2 opacity-0 translate-y-3 transition-all duration-200 ease-out group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:translate-y-0 pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto">
                     {!isHost ? (
                       <div className="max-w-[12rem] rounded-2xl border border-slate-700/80 bg-slate-950/90 backdrop-blur px-3 py-2 shadow-2xl shadow-black/30">
-                        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-300">
+                        <p className="text-xs font-black uppercase tracking-[0.12em] text-amber-300">
                           Solo el host puede manejar la reproducción
                         </p>
                       </div>
@@ -1675,10 +1738,10 @@ export default function RoomPage() {
                         }`}
                       >
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-[10px] uppercase tracking-widest text-slate-400">Volume</span>
+                          <span className="text-xs uppercase tracking-[0.12em] text-slate-400">Volume</span>
                           <button
                             type="button"
-                            className="text-[10px] uppercase tracking-widest text-slate-300 hover:text-white"
+                            className="text-xs uppercase tracking-[0.12em] text-slate-300 hover:text-white"
                             onClick={toggleMute}
                           >
                             {playerMuted || playerVolume <= 0 ? "Unmute" : "Mute"}
@@ -1694,7 +1757,7 @@ export default function RoomPage() {
                           className="w-full accent-brand-400"
                           aria-label="Player volume"
                         />
-                        <div className="mt-2 text-right text-[11px] tabular-nums text-slate-300">
+                        <div className="mt-2 text-right text-xs tabular-nums text-slate-300">
                           {playerMuted ? 0 : playerVolume}%
                         </div>
                       </div>
@@ -1706,14 +1769,12 @@ export default function RoomPage() {
           </div>
 
           {room?.status === "playing" && (
-            <div className="card p-6 flex flex-col md:flex-row items-center justify-between gap-8">
+            <div className="card p-5 md:p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-6 lg:gap-8">
               <div className="flex-1 text-center md:text-left">
-                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-[0.2em] mb-2">Rate this Opening</h3>
+                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-[0.12em] mb-2">Rate this Opening</h3>
                 <div className="max-w-xl mx-auto md:mx-0">
-                  <div className="flex items-center justify-between mb-2 text-[11px] uppercase tracking-[0.18em] text-slate-400 font-bold">
-                    <span>1</span>
-                    <span className="text-brand-300 tabular-nums">{myRating > 0 ? formatRatingValue(myRating) : "-"}</span>
-                    <span>10</span>
+                  <div className="flex items-center justify-center mb-3 text-sm text-slate-400 font-semibold">
+                    <span className="text-2xl text-brand-300 tabular-nums font-bold">{myRating > 0 ? formatRatingValue(myRating) : "-"}</span>
                   </div>
                   <input
                     type="range"
@@ -1730,13 +1791,13 @@ export default function RoomPage() {
                         commitRatingFromSlider(event.currentTarget.value);
                       }
                     }}
-                    className="w-full h-2 rounded-full bg-slate-800 accent-brand-500 cursor-pointer"
+                    className="w-full h-3 rounded-full bg-slate-700 accent-brand-400 cursor-pointer"
                     aria-label="Rate current opening from 1 to 10 in steps of 0.5"
                   />
-                  <div className="mt-2 grid grid-cols-10 text-[10px] text-slate-500 font-bold tabular-nums select-none">
+                  <div className="mt-3 grid grid-cols-10 text-xs text-slate-500 font-semibold tabular-nums select-none">
                     {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
                       <div key={num} className="flex flex-col items-center justify-start gap-1">
-                        <span className="block w-px h-1.5 bg-slate-600/80" aria-hidden="true" />
+                        <span className="block w-0.5 h-2 bg-slate-600 rounded-full" aria-hidden="true" />
                         <span>{num}</span>
                       </div>
                     ))}
@@ -1745,21 +1806,25 @@ export default function RoomPage() {
               </div>
 
               {isHost && (
-                <div className="flex items-center gap-2 whitespace-nowrap">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full lg:w-auto">
                   <button
-                    className="btn-secondary h-12 px-4 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    type="button"
+                    className="btn-secondary h-11 px-6 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold transition-all hover:shadow-lg"
                     onClick={goPrev}
                     disabled={room.current_opening_index <= 0 || actionLoading}
+                    aria-label="Go to previous opening"
                   >
                     Prev
                   </button>
                   <button
-                    className="btn-primary h-12 px-8 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    type="button"
+                    className="btn-primary h-11 px-6 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-semibold transition-all hover:shadow-xl hover:-translate-y-0.5"
                     onClick={handleNext}
                     disabled={actionLoading}
+                    aria-label={room.current_opening_index >= openings.length - 1 ? "Finish session" : "Go to next opening"}
                   >
                     <SkipForward className="w-4 h-4" />
-                    {room.current_opening_index >= openings.length - 1 ? "Finish Session" : "Next Opening"}
+                    {room.current_opening_index >= openings.length - 1 ? "Finish" : "Next"}
                   </button>
                 </div>
               )}
@@ -1767,32 +1832,47 @@ export default function RoomPage() {
           )}
         </div>
 
-        <div className="lg:col-span-3 flex flex-col gap-6 min-h-0">
+        <div className="flex flex-col gap-4 md:gap-6 min-h-0 xl:min-w-0">
           <div className="card flex-1 flex flex-col min-h-0 p-0 overflow-hidden">
-            <div className="flex-1 overflow-y-auto p-6 scrollbar-thin space-y-6">
-              <div className="rounded-2xl border border-brand-500/25 bg-brand-500/10 px-4 py-3">
-                <p className="text-[10px] uppercase tracking-[0.2em] text-brand-200/80 font-bold">Global opening avg</p>
+            <div className="flex-1 overflow-y-auto p-5 md:p-6 scrollbar-thin space-y-7">
+              <div className="rounded-2xl border border-brand-500/25 bg-brand-500/10 px-4 py-3.5">
+                <p className="text-xs uppercase tracking-[0.12em] text-brand-200/80 font-bold">Global opening avg</p>
                 <div className="mt-1 flex items-end justify-between gap-3">
                   <p className="text-2xl font-black text-brand-200 tabular-nums">
                     {openingAverage.hasVotes ? openingAverage.value.toFixed(2) : "-"}
                   </p>
-                  <p className="text-[11px] text-brand-100/80 uppercase tracking-wider font-semibold">
+                  <p className="text-xs text-brand-100/80 uppercase tracking-[0.12em] font-semibold">
                     {openingAverage.count} rating{openingAverage.count === 1 ? "" : "s"}
                   </p>
                 </div>
               </div>
 
-              <div className="space-y-3">
-                {mergedParticipants.map((participant) => {
+              <div className="space-y-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs uppercase tracking-[0.12em] text-slate-500 font-bold">Participants</p>
+                  {mergedParticipants.length > 5 ? (
+                    <button
+                      type="button"
+                      className="text-xs uppercase tracking-[0.12em] text-slate-400 hover:text-slate-200"
+                      onClick={() => setParticipantsExpanded((prev) => !prev)}
+                      aria-expanded={participantsExpanded}
+                    >
+                      {participantsExpanded ? "Show less" : `Show all (${mergedParticipants.length})`}
+                    </button>
+                  ) : null}
+                </div>
+
+                {mergedParticipants
+                  .slice(0, participantsExpanded ? mergedParticipants.length : 5)
+                  .map((participant) => {
                   const isActive = activeUserSet.has(participant.user_uuid);
                   const voted = hasVoted(participant.user_uuid);
                   const score = userScoreMap[participant.user_uuid];
-                  const roomAvg = Number(roomUserAverages[participant.user_uuid]);
 
                   return (
                     <div
                       key={participant.id}
-                      className={`group relative flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-800 transition-opacity ${
+                      className={`group relative flex items-center justify-between p-3.5 rounded-xl bg-slate-900/50 border border-slate-800 transition-opacity ${
                         isActive ? "opacity-100" : "opacity-55"
                       }`}
                     >
@@ -1818,10 +1898,10 @@ export default function RoomPage() {
                           <span className="text-sm font-medium block truncate">{participant.user_name}</span>
                           <div className="flex items-center gap-2 mt-1">
                             {participant.user_uuid === hostUuid && (
-                              <span className="pill text-[8px] bg-amber-500/10 text-amber-500 border-amber-500/20">HOST</span>
+                              <span className="pill text-xs bg-amber-500/10 text-amber-500 border-amber-500/20">HOST</span>
                             )}
                             {voted ? (
-                              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 bg-emerald-400/10 border border-emerald-400/20 rounded-full px-2 py-1">
+                              <span className="inline-flex items-center gap-1 text-xs font-bold uppercase tracking-[0.12em] text-emerald-300 bg-emerald-400/10 border border-emerald-400/20 rounded-full px-2 py-1">
                                 <CheckCircle2 className="w-3 h-3" />
                                 Rated
                               </span>
@@ -1830,36 +1910,65 @@ export default function RoomPage() {
                         </div>
                       </div>
 
-                      <div className="min-w-[2rem] text-right text-sm font-black text-brand-300">
+                      <div className="min-w-[2rem] text-right text-base font-black text-brand-300">
                         {voted ? formatRatingValue(score) : isActive ? "-" : ""}
-                      </div>
-
-                      <div className="pointer-events-none absolute right-2 top-2 z-20 rounded-lg border border-slate-700/80 bg-slate-950/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-200 opacity-0 translate-y-1 transition-all duration-150 group-hover:opacity-100 group-hover:translate-y-0">
-                        Average rating: {Number.isFinite(roomAvg) ? roomAvg.toFixed(2) : "-"}
                       </div>
                     </div>
                   );
                 })}
               </div>
 
-              <div className="border-t border-slate-800 pt-6">
-                <div className="flex items-center justify-center gap-3 mb-4">
-                  {isHost && room?.status !== "finished" ? (
+              <div className="border-t border-slate-800 pt-6 space-y-3.5">
+                {isHost && room?.status !== "finished" ? (
+                  <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-3.5 py-3">
                     <button
                       type="button"
-                      className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-100 shadow-lg shadow-cyan-500/10 transition-all hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
-                      onClick={handleShuffleQueue}
-                      disabled={actionLoading || openings.length <= 1}
-                      title="Shuffle the queue"
+                      className="w-full flex items-center justify-between gap-3 text-left"
+                      onClick={() => setHostToolsExpanded((prev) => !prev)}
+                      aria-expanded={hostToolsExpanded}
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${shuffleLoading ? "animate-spin" : ""}`} />
-                      Shuffle queue
+                      <span className="text-xs uppercase tracking-[0.12em] text-slate-300 font-bold">Host tools</span>
+                      <span className="text-xs uppercase tracking-[0.12em] text-slate-400">
+                        {hostToolsExpanded ? "Hide" : "Show"}
+                      </span>
+                    </button>
+
+                    {hostToolsExpanded ? (
+                      <div className="mt-3 flex flex-col gap-2.5">
+                        <button
+                          type="button"
+                          className="inline-flex items-center justify-center gap-2 rounded-full border border-brand-400/30 bg-brand-500/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.12em] text-brand-100 shadow-lg shadow-brand-500/10 transition-all hover:-translate-y-0.5 hover:border-brand-300/50 hover:bg-brand-500/15 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+                          onClick={handleShuffleQueue}
+                          disabled={actionLoading || openings.length <= 1}
+                          title="Shuffle the queue"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${shuffleLoading ? "animate-spin" : ""}`} />
+                          Shuffle
+                        </button>
+                        <p className="text-sm text-slate-400 leading-relaxed">
+                          Pick any opening below to jump the queue.
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs uppercase tracking-[0.12em] text-slate-500 font-bold">Queue</p>
+                  {hiddenQueue.length > 0 ? (
+                    <button
+                      type="button"
+                      className="text-xs uppercase tracking-[0.12em] text-slate-400 hover:text-slate-200"
+                      onClick={() => setQueueExpanded((prev) => !prev)}
+                      aria-expanded={queueExpanded}
+                    >
+                      {queueExpanded ? "Show less" : `Show all (${openings.length})`}
                     </button>
                   ) : null}
                 </div>
 
-                <div className="space-y-2 max-h-72 overflow-y-auto pr-1 scrollbar-thin">
-                  {openings.map((opening) => {
+                <div className="space-y-2.5 pr-1">
+                  {[...featuredQueue, ...(queueExpanded ? hiddenQueue : [])].map((opening) => {
                     const isCurrent = opening.order_index === room?.current_opening_index;
                     const isPlayable = Boolean(opening.youtube_video_id);
 
@@ -1869,7 +1978,7 @@ export default function RoomPage() {
                         type="button"
                         onClick={() => isHost && handleSelectOpening(opening.order_index)}
                         disabled={!isHost || actionLoading}
-                        className={`w-full text-left rounded-xl border p-3 transition-all ${
+                        className={`w-full text-left rounded-xl border px-3.5 py-3 transition-all ${
                           isCurrent
                             ? "bg-brand-500/10 border-brand-500/40"
                             : "bg-slate-900/40 border-slate-800 hover:border-slate-700"
@@ -1886,22 +1995,17 @@ export default function RoomPage() {
                               {opening.anime_title}
                               {isCurrent && <CheckCircle2 className="w-4 h-4 text-brand-400 shrink-0" />}
                             </p>
-                            <p className="text-[10px] text-slate-500 truncate">{opening.opening_label}</p>
+                            <p className="text-xs text-slate-500 truncate">{opening.opening_label}</p>
                           </div>
                         </div>
                         {!isPlayable && (
-                          <p className="text-[10px] text-slate-600 mt-2">This item has no embedded YouTube id yet.</p>
+                          <p className="text-xs text-slate-600 mt-2">This item has no embedded YouTube id yet.</p>
                         )}
                       </button>
                     );
                   })}
                 </div>
               </div>
-            </div>
-
-            <div className="border-t border-slate-800 px-6 py-4 text-xs text-slate-400 flex items-center justify-between">
-              <span>{ratedConnectedCount}/{connectedCount} rated</span>
-              <span>{connectedUnratedParticipants.length} pending</span>
             </div>
           </div>
         </div>

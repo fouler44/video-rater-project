@@ -133,7 +133,7 @@ export default function RankingsPage() {
       .sort((a, b) => b.groupAvg - a.groupAvg);
   }, [openings, ratings, storedRankings, identity?.userId]);
 
-  if (loading) return <div className="flex items-center justify-center min-h-screen"><RefreshCw className="animate-spin text-brand-500" /></div>;
+  if (loading) return <div className="flex items-center justify-center min-h-[100dvh]"><RefreshCw className="animate-spin text-brand-500" /></div>;
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-12">
