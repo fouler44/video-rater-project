@@ -1,12 +1,13 @@
-import { useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import LobbyPage from "./pages/LobbyPage";
-import RoomPage from "./pages/RoomPage";
-import RankingsPage from "./pages/RankingsPage";
-import CreateListPage from "./pages/CreateListPage";
-import AuthPage from "./pages/AuthPage";
 import { prefersReducedMotion } from "./lib/viewTransition";
+
+const RoomPage = lazy(() => import("./pages/RoomPage"));
+const RankingsPage = lazy(() => import("./pages/RankingsPage"));
+const CreateListPage = lazy(() => import("./pages/CreateListPage"));
+const AuthPage = lazy(() => import("./pages/AuthPage"));
 
 const ROOM_PAGE_PATTERN = /^\/room\/[^/]+$/;
 
@@ -65,6 +66,10 @@ function PageWrapper({ children, transitionKey }) {
   );
 }
 
+function RouteChunkFallback() {
+  return <div className="min-h-[100dvh]" aria-hidden="true" />;
+}
+
 export default function App() {
   const location = useLocation();
   const previousPathRef = useRef(location.pathname);
@@ -79,10 +84,10 @@ export default function App() {
     <AnimatePresence mode="wait">
       <Routes location={location} key={location.pathname}>
         <Route path="/" element={<PageWrapper transitionKey={transitionKey}><LobbyPage /></PageWrapper>} />
-        <Route path="/auth" element={<PageWrapper transitionKey={transitionKey}><AuthPage /></PageWrapper>} />
-        <Route path="/create-list" element={<PageWrapper transitionKey={transitionKey}><CreateListPage /></PageWrapper>} />
-        <Route path="/room/:roomId" element={<PageWrapper transitionKey={transitionKey}><RoomPage /></PageWrapper>} />
-        <Route path="/room/:roomId/rankings" element={<PageWrapper transitionKey={transitionKey}><RankingsPage /></PageWrapper>} />
+        <Route path="/auth" element={<PageWrapper transitionKey={transitionKey}><Suspense fallback={<RouteChunkFallback />}><AuthPage /></Suspense></PageWrapper>} />
+        <Route path="/create-list" element={<PageWrapper transitionKey={transitionKey}><Suspense fallback={<RouteChunkFallback />}><CreateListPage /></Suspense></PageWrapper>} />
+        <Route path="/room/:roomId" element={<PageWrapper transitionKey={transitionKey}><Suspense fallback={<RouteChunkFallback />}><RoomPage /></Suspense></PageWrapper>} />
+        <Route path="/room/:roomId/rankings" element={<PageWrapper transitionKey={transitionKey}><Suspense fallback={<RouteChunkFallback />}><RankingsPage /></Suspense></PageWrapper>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AnimatePresence>

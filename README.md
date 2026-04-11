@@ -101,3 +101,4 @@ Required PartyKit runtime variables:
 - PartyKit validates session token on connect and rejects invalid clients.
 - Internal PartyKit-backend calls require HMAC signature with timestamp/nonce.
 - 500 responses are generic to clients; full detail is server-side logs only.
+- Temporary analysis artifacts such as `tmp_openings_missing_youtube_links.*` and `.tmp_build_*youtube_links.js` are ignored and should stay out of commits.

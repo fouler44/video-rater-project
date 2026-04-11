@@ -13,7 +13,7 @@ import {
   VolumeX,
   Trophy,
   Trash2,
-  Star,
+  ListMusic,
   CheckCircle2,
   AlertTriangle,
   X,
@@ -1562,7 +1562,12 @@ export default function RoomPage() {
 
   return (
     <>
-      <div className="max-w-[1640px] mx-auto px-3 md:px-4 lg:px-6 py-3 md:py-4 lg:py-5 min-h-[100dvh] flex flex-col gap-3 md:gap-4">
+      <div className="room-page-shell">
+      <div className="room-page-aurora" aria-hidden="true" />
+      <div className="room-page-tide" aria-hidden="true" />
+      <div className="room-page-dust" aria-hidden="true" />
+      <div className="room-page-gridline" aria-hidden="true" />
+      <div className="max-w-[1640px] mx-auto px-3 md:px-4 lg:px-6 py-3 md:py-4 lg:py-5 min-h-[100dvh] flex flex-col gap-3 md:gap-4 relative z-10">
       {uiNotice ? (
         <div
           className={`text-sm px-4 py-3.5 rounded-xl border flex items-start gap-3 animate-fade-in ${
@@ -1585,7 +1590,7 @@ export default function RoomPage() {
         </div>
       ) : null}
 
-      <header className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] items-start md:items-center shrink-0 gap-3 md:gap-4">
+      <header className="room-glass-header grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] items-start md:items-center shrink-0 gap-3 md:gap-4 room-enter">
         <div
           className="flex items-center gap-4 min-w-0"
           style={entryTransitionName ? { viewTransitionName: entryTransitionName } : undefined}
@@ -1594,21 +1599,23 @@ export default function RoomPage() {
             <ChevronLeft className="w-6 h-6" />
           </Link>
           <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl font-black truncate">{room?.name}</h1>
-            <p className="text-xs text-slate-500 flex items-center gap-2 uppercase tracking-[0.12em]">
-              <Star className="w-3 h-3 text-brand-400" />
+            <h1 className="room-title-display truncate">{room?.name}</h1>
+            <p className="room-list-meta flex items-center gap-2">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-brand-400/35 bg-brand-500/12 text-brand-200">
+                <ListMusic className="w-3 h-3" />
+              </span>
               {room?.lists?.name}
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-full text-xs font-bold text-slate-300">
+          <div className="room-stat-chip hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold text-slate-300">
             <Users className="w-3 h-3" />
             {ratedConnectedCount}/{connectedCount} rated
           </div>
 
-          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-full text-xs font-bold text-slate-400">
+          <div className="room-stat-chip hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold text-slate-300">
             <span className={`w-2 h-2 rounded-full ${partyConnected ? "bg-emerald-400" : "bg-slate-500"}`} />
             {partyConnected ? "Realtime" : "Reconnecting"}
           </div>
@@ -1626,12 +1633,12 @@ export default function RoomPage() {
         </div>
       </header>
 
-      <div className="grid grid-cols-2 gap-2 md:hidden shrink-0">
-        <div className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-900/80 border border-slate-800 rounded-xl text-xs font-bold text-slate-200">
+      <div className="grid grid-cols-2 gap-2 md:hidden shrink-0 room-enter" style={{ "--enter-delay": "80ms" }}>
+        <div className="room-stat-chip flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-bold text-slate-200">
           <Users className="w-3 h-3" />
           {ratedConnectedCount}/{connectedCount} rated
         </div>
-        <div className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-900/80 border border-slate-800 rounded-xl text-xs font-bold text-slate-300">
+        <div className="room-stat-chip flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-bold text-slate-300">
           <span className={`w-2 h-2 rounded-full ${partyConnected ? "bg-emerald-400" : "bg-slate-500"}`} />
           {partyConnected ? "Realtime" : "Reconnecting"}
         </div>
@@ -1643,22 +1650,23 @@ export default function RoomPage() {
         </div>
       ) : null}
 
-      <div className="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,430px)] gap-4 md:gap-5 xl:gap-6 min-h-0">
+      <div className="room-reimagine-grid flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,430px)] gap-4 md:gap-5 xl:gap-6 min-h-0">
         <div className="flex flex-col gap-4 md:gap-6 min-h-0 xl:min-w-0">
           {room?.status === "playing" && currentOpening && (
-            <div className="flex items-center justify-between px-4 md:px-5 py-2.5 bg-slate-900/40 border border-slate-800 rounded-2xl">
+            <div className="room-radar-panel room-enter flex items-center justify-between px-4 md:px-5 py-2.5" style={{ "--enter-delay": "120ms" }}>
               <div>
-                <h3 className="text-base md:text-lg font-bold">{currentOpening.anime_title}</h3>
-                <p className="text-xs text-slate-400 uppercase tracking-[0.12em]">{currentOpening.opening_label}</p>
+                <h3 className="room-anime-now-title">{currentOpening.anime_title}</h3>
+                <p className="text-[11px] text-slate-400 uppercase tracking-[0.11em]">{currentOpening.opening_label}</p>
               </div>
-              <div className="bg-brand-500 px-3 py-1 rounded-full text-xs font-black shadow-lg">
+              <div className="room-jump-chip bg-brand-400/85 px-3 py-1 text-xs font-black shadow-lg text-slate-950 border-0">
                 {room?.current_opening_index + 1} / {openings.length}
               </div>
             </div>
           )}
 
           <div
-            className="relative bg-black rounded-3xl overflow-hidden shadow-2xl border border-slate-800 group h-[clamp(240px,48vh,560px)]"
+            className="room-video-stage relative rounded-3xl overflow-hidden shadow-2xl border group h-[clamp(260px,52vh,600px)] room-enter"
+            style={{ "--enter-delay": "160ms" }}
             onMouseLeave={() => setVolumePanelOpen(false)}
           >
             {room?.status === "waiting" ? (
@@ -1776,12 +1784,17 @@ export default function RoomPage() {
           </div>
 
           {room?.status === "playing" && (
-            <div className="card p-5 md:p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-6 lg:gap-8">
+            <div className="room-rating-panel card p-4 md:p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 lg:gap-6 room-enter" style={{ "--enter-delay": "220ms" }}>
               <div className="flex-1 text-center md:text-left">
-                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-[0.12em] mb-2">Rate this Opening</h3>
                 <div className="max-w-xl mx-auto md:mx-0">
-                  <div className="flex items-center justify-center mb-3 text-sm text-slate-400 font-semibold">
-                    <span className="text-2xl text-brand-300 tabular-nums font-bold">{myRating > 0 ? formatRatingValue(myRating) : "-"}</span>
+                  <div className="flex items-center justify-center mb-2 text-sm text-slate-400 font-semibold">
+                    <span className="text-2xl text-brand-300 tabular-nums font-bold">
+                      {myRating > 0 ? (
+                        formatRatingValue(myRating)
+                      ) : (
+                        <span className="room-rating-orb" aria-label="Pending rating" />
+                      )}
+                    </span>
                   </div>
                   <input
                     type="range"
@@ -1801,7 +1814,7 @@ export default function RoomPage() {
                     className="w-full h-3 rounded-full bg-slate-700 accent-brand-400 cursor-pointer"
                     aria-label="Rate current opening from 1 to 10 in steps of 0.5"
                   />
-                  <div className="mt-3 grid grid-cols-10 text-xs text-slate-500 font-semibold tabular-nums select-none">
+                  <div className="mt-2 grid grid-cols-10 text-xs text-slate-500 font-semibold tabular-nums select-none">
                     {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
                       <div key={num} className="flex flex-col items-center justify-start gap-1">
                         <span className="block w-0.5 h-2 bg-slate-600 rounded-full" aria-hidden="true" />
@@ -1840,10 +1853,10 @@ export default function RoomPage() {
         </div>
 
         <div className="flex flex-col gap-4 md:gap-6 min-h-0 xl:min-w-0 xl:w-full xl:max-w-[430px] xl:justify-self-end">
-          <div className="card flex-1 flex flex-col min-h-0 p-0 overflow-hidden">
+          <div className="room-radar-panel room-enter flex-1 flex flex-col min-h-0 p-0 overflow-hidden" style={{ "--enter-delay": "260ms" }}>
             <div className="flex-1 overflow-y-auto p-5 md:p-6 scrollbar-thin space-y-7">
-              <div className="rounded-2xl border border-brand-500/25 bg-brand-500/10 px-4 py-3.5">
-                <p className="text-xs uppercase tracking-[0.12em] text-brand-200/80 font-bold">Global opening avg</p>
+              <div className="rounded-2xl border border-brand-500/25 bg-brand-500/10 px-4 py-3.5 room-radar-head">
+                <p className="text-xs uppercase tracking-[0.12em] text-brand-200/80 font-bold">Score</p>
                 <div className="mt-1 flex items-end justify-between gap-3">
                   <p className="text-2xl font-black text-brand-200 tabular-nums">
                     {openingAverage.hasVotes ? openingAverage.value.toFixed(2) : "-"}
@@ -1888,7 +1901,7 @@ export default function RoomPage() {
                   return (
                     <div
                       key={participant.id}
-                      className={`group relative flex items-center justify-between p-3.5 rounded-xl bg-slate-900/50 border border-slate-800 transition-opacity ${
+                      className={`room-radar-entry group relative flex items-center justify-between p-3.5 transition-opacity ${
                         isActive ? "opacity-100" : "opacity-55"
                       }`}
                     >
@@ -1939,9 +1952,9 @@ export default function RoomPage() {
                 </div>
               </div>
 
-              <div className="border-t border-slate-800 pt-6 space-y-3.5">
+              <div className="room-soft-divider pt-6 space-y-3.5">
                 {isHost && room?.status !== "finished" ? (
-                  <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-3.5 py-3">
+                  <div className="room-soft-block rounded-xl px-3.5 py-3">
                     <button
                       type="button"
                       className="w-full flex items-center justify-between gap-3 text-left"
@@ -1989,7 +2002,7 @@ export default function RoomPage() {
                 </div>
 
                 <div
-                  className={`space-y-2.5 pr-1 ${
+                  className={`room-chaos-grid space-y-2.5 pr-1 ${
                     queueExpanded ? "max-h-[min(56vh,34rem)] overflow-y-auto scrollbar-thin" : ""
                   }`}
                 >
@@ -2003,9 +2016,9 @@ export default function RoomPage() {
                         type="button"
                         onClick={() => isHost && handleSelectOpening(opening.order_index)}
                         disabled={!isHost || actionLoading}
-                        className={`w-full text-left rounded-xl border px-3.5 py-3 transition-all ${
+                        className={`room-radar-entry w-full text-left rounded-xl border px-3.5 py-3 transition-all ${
                           isCurrent
-                            ? "bg-brand-500/10 border-brand-500/40"
+                            ? "bg-brand-500/10 border-brand-400/35"
                             : "bg-slate-900/40 border-slate-800 hover:border-slate-700"
                         } ${isHost && !actionLoading ? "hover:-translate-y-0.5" : ""} ${
                           actionLoading ? "opacity-50 cursor-not-allowed" : ""
@@ -2016,9 +2029,9 @@ export default function RoomPage() {
                             {opening.order_index + 1}
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="text-sm font-bold truncate flex items-center gap-2">
+                            <p className="room-anime-queue-title truncate flex items-center gap-2">
                               {opening.anime_title}
-                              {isCurrent && <CheckCircle2 className="w-4 h-4 text-brand-400 shrink-0" />}
+                              {isCurrent && <CheckCircle2 className="w-4 h-4 text-brand-300 shrink-0" />}
                             </p>
                             <p className="text-xs text-slate-500 truncate">{opening.opening_label}</p>
                           </div>
@@ -2035,6 +2048,7 @@ export default function RoomPage() {
           </div>
         </div>
       </div>
+    </div>
     </div>
 
       {confirmDialog.open ? (

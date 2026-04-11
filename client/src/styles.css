@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Cabin:wght@400;500;600;700&family=Courier+Prime:wght@400;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Cabin:wght@400;500;600;700&family=Courier+Prime:wght@400;700&family=Chakra+Petch:wght@500;600;700&display=swap");
 @import "tailwindcss";
 
 @theme {
@@ -294,6 +294,1088 @@
   .motion-lift:active {
     transform: translateY(0) scale(0.985);
   }
+
+  .lobby-hero-stage {
+    --spot-x: 66%;
+    --spot-y: 12%;
+    --tilt-x: 0deg;
+    --tilt-y: 0deg;
+    isolation: isolate;
+  }
+
+  .lobby-party-stage {
+    background:
+      linear-gradient(158deg, rgba(10, 15, 26, 0.9) 0%, rgba(14, 20, 34, 0.84) 48%, rgba(10, 12, 19, 0.92) 100%),
+      radial-gradient(circle at 76% -16%, rgba(245, 158, 11, 0.09), transparent 55%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 24px 56px rgba(0, 0, 0, 0.4);
+  }
+
+  .lobby-command-deck {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  .quick-join-inline {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 16px 32px rgba(0, 0, 0, 0.28);
+  }
+
+  .lobby-portal-stage {
+    background:
+      linear-gradient(160deg, rgba(8, 12, 20, 0.92) 0%, rgba(9, 14, 24, 0.9) 52%, rgba(8, 10, 16, 0.96) 100%),
+      radial-gradient(circle at 18% 18%, rgba(56, 189, 248, 0.08), transparent 28%),
+      radial-gradient(circle at 84% 0%, rgba(249, 115, 22, 0.08), transparent 42%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 24px 64px rgba(0, 0, 0, 0.34);
+    min-height: 560px;
+  }
+
+  .lobby-page-shell {
+    isolation: isolate;
+  }
+
+  .lobby-page-shell > :not(.lobby-water-bg) {
+    position: relative;
+    z-index: 1;
+  }
+
+  .lobby-water-bg {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .lobby-water-sheet {
+    position: absolute;
+    inset: -22%;
+    opacity: 0.28;
+    filter: blur(14px) saturate(104%);
+    will-change: transform;
+  }
+
+  .lobby-water-sheet-a {
+    background:
+      radial-gradient(42% 34% at 18% 28%, rgba(56, 189, 248, 0.22), transparent 74%),
+      radial-gradient(44% 36% at 76% 24%, rgba(14, 165, 233, 0.18), transparent 76%),
+      radial-gradient(36% 34% at 54% 78%, rgba(251, 146, 60, 0.12), transparent 78%);
+    animation: waterDriftA 36s var(--ease-out-quint) infinite alternate;
+  }
+
+  .lobby-water-sheet-b {
+    opacity: 0.18;
+    background:
+      radial-gradient(36% 32% at 84% 66%, rgba(56, 189, 248, 0.16), transparent 76%),
+      radial-gradient(34% 30% at 26% 70%, rgba(125, 211, 252, 0.14), transparent 76%),
+      radial-gradient(40% 34% at 48% 10%, rgba(249, 115, 22, 0.08), transparent 80%);
+    animation: waterDriftB 46s var(--ease-out-quint) infinite alternate-reverse;
+  }
+
+  .lobby-water-ripple {
+    position: absolute;
+    inset: -12%;
+    opacity: 0.1;
+    background-image:
+      radial-gradient(circle at 24% 32%, rgba(255, 255, 255, 0.28) 0, transparent 38%),
+      radial-gradient(circle at 76% 68%, rgba(56, 189, 248, 0.28) 0, transparent 36%),
+      repeating-radial-gradient(circle at 50% 50%, rgba(148, 163, 184, 0.22) 0 1px, transparent 1px 18px);
+    mix-blend-mode: normal;
+    animation: waterRippleDrift 30s linear infinite;
+  }
+
+  .lobby-command-runway {
+    max-width: 620px;
+  }
+
+  .lobby-particle-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    mix-blend-mode: normal;
+    opacity: 0.46;
+  }
+
+  .lobby-plasma {
+    position: absolute;
+    inset: -28% -20% -28% -20%;
+    opacity: 0.18;
+    background:
+      radial-gradient(34% 30% at 16% 20%, rgba(56, 189, 248, 0.14), transparent 78%),
+      radial-gradient(38% 34% at 78% 14%, rgba(251, 146, 60, 0.15), transparent 76%),
+      radial-gradient(44% 36% at 55% 82%, rgba(59, 130, 246, 0.1), transparent 82%);
+    animation: plasmaDrift 36s var(--ease-out-quint) infinite alternate;
+  }
+
+  .lobby-deep-field {
+    position: absolute;
+    inset: -42%;
+    opacity: 0.22;
+    background:
+      radial-gradient(50% 42% at 20% 18%, rgba(56, 189, 248, 0.09), transparent 72%),
+      radial-gradient(48% 38% at 84% 76%, rgba(251, 146, 60, 0.08), transparent 74%),
+      radial-gradient(42% 36% at 54% 52%, rgba(148, 163, 184, 0.06), transparent 76%);
+    transform: translate3d(calc(var(--bg-x, 0) * 1px), calc(var(--bg-y, 0) * 1px), 0) scale(1.08);
+    animation: deepFieldDrift 44s var(--ease-out-quint) infinite alternate;
+  }
+
+  .lobby-grid-drift {
+    position: absolute;
+    inset: -18%;
+    opacity: 0.12;
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.24) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.2) 1px, transparent 1px);
+    background-size: 50px 50px;
+    mask-image: radial-gradient(circle at center, rgba(0, 0, 0, 0.9), transparent 78%);
+    animation: gridDrift 48s linear infinite;
+  }
+
+  .account-portal-chip {
+    border-color: rgba(71, 85, 105, 0.82);
+    background:
+      linear-gradient(160deg, rgba(9, 13, 22, 0.86) 0%, rgba(8, 12, 20, 0.94) 100%),
+      radial-gradient(circle at 100% 0%, rgba(251, 146, 60, 0.12), transparent 52%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.09),
+      0 16px 30px rgba(0, 0, 0, 0.34);
+  }
+
+  .account-portal-chip:hover {
+    border-color: rgba(251, 146, 60, 0.56);
+    background:
+      linear-gradient(160deg, rgba(11, 16, 27, 0.9) 0%, rgba(8, 12, 20, 0.96) 100%),
+      radial-gradient(circle at 100% 0%, rgba(251, 146, 60, 0.16), transparent 52%);
+  }
+
+  .portal-title-stack {
+    display: grid;
+    gap: 0.1rem;
+    line-height: 0.88;
+  }
+
+  .portal-word {
+    display: block;
+    font-size: clamp(2.7rem, 9vw, 5.8rem);
+    font-family: "Chakra Petch", "Fredoka", sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-shadow: 0 8px 26px rgba(2, 6, 23, 0.62);
+  }
+
+  .portal-word-a {
+    transform: translateX(-0.02em);
+  }
+
+  .portal-word-b {
+    transform: translateX(0.2em);
+    color: rgba(241, 245, 249, 0.83);
+  }
+
+  .signal-marquee {
+    max-width: 640px;
+    overflow: hidden;
+    border-top: 1px solid rgba(71, 85, 105, 0.5);
+    border-bottom: 1px solid rgba(71, 85, 105, 0.5);
+    padding: 0.42rem 0;
+  }
+
+  .signal-marquee-track {
+    display: flex;
+    width: max-content;
+    gap: 1.6rem;
+    font-size: 0.64rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: rgb(148, 163, 184);
+    animation: signalMarquee 18s linear infinite;
+  }
+
+  .signal-marquee-track span::after {
+    content: "/";
+    margin-left: 1.6rem;
+    color: rgba(251, 191, 36, 0.72);
+  }
+
+  .portal-ring {
+    position: absolute;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    pointer-events: none;
+  }
+
+  .portal-ring-a {
+    right: -120px;
+    top: -90px;
+    height: 300px;
+    width: 300px;
+    animation: portalFloat 10s var(--ease-out-quart) infinite alternate;
+  }
+
+  .portal-ring-b {
+    left: -120px;
+    bottom: -160px;
+    height: 380px;
+    width: 380px;
+    animation: portalFloat 13s var(--ease-out-quart) infinite alternate-reverse;
+  }
+
+  .portal-map-shell {
+    border-radius: 1.7rem;
+    border: 1px solid rgba(71, 85, 105, 0.7);
+    background:
+      linear-gradient(168deg, rgba(5, 10, 18, 0.92) 0%, rgba(8, 12, 21, 0.84) 58%, rgba(6, 9, 16, 0.94) 100%),
+      radial-gradient(circle at 75% 14%, rgba(251, 146, 60, 0.1), transparent 42%);
+    padding: 1.1rem;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 20px 40px rgba(0, 0, 0, 0.36);
+  }
+
+  .portal-sculpt-shell {
+    position: relative;
+    min-height: 430px;
+    border-radius: 1.7rem;
+    border: 1px solid rgba(71, 85, 105, 0.7);
+    background:
+      linear-gradient(168deg, rgba(5, 10, 18, 0.94) 0%, rgba(7, 11, 18, 0.88) 58%, rgba(6, 9, 16, 0.95) 100%),
+      radial-gradient(circle at 70% 14%, rgba(56, 189, 248, 0.14), transparent 40%),
+      radial-gradient(circle at 25% 75%, rgba(251, 146, 60, 0.1), transparent 45%);
+    overflow: hidden;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 20px 40px rgba(0, 0, 0, 0.36);
+  }
+
+  .portal-sculpt-core {
+    position: absolute;
+    left: 50%;
+    top: 47%;
+    width: 148px;
+    height: 148px;
+    border-radius: 46% 54% 57% 43% / 42% 53% 47% 58%;
+    transform: translate(-50%, -50%);
+    background:
+      radial-gradient(circle at 32% 30%, rgba(255, 255, 255, 0.24), transparent 35%),
+      radial-gradient(circle at 65% 68%, rgba(14, 165, 233, 0.56), rgba(15, 23, 42, 0.1) 65%),
+      linear-gradient(160deg, rgba(251, 146, 60, 0.3), rgba(56, 189, 248, 0.26));
+    box-shadow:
+      0 0 0 1px rgba(148, 163, 184, 0.32),
+      0 18px 44px rgba(2, 132, 199, 0.2);
+    animation: sculptMorph 8.5s ease-in-out infinite;
+  }
+
+  .portal-sculpt-orbit {
+    position: absolute;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  .orbit-a {
+    width: 220px;
+    height: 220px;
+    animation: orbitSpin 12s linear infinite;
+  }
+
+  .orbit-b {
+    width: 280px;
+    height: 180px;
+    transform: translate(-50%, -50%) rotate(28deg);
+    animation: orbitSpinReverse 10s linear infinite;
+  }
+
+  .orbit-c {
+    width: 170px;
+    height: 290px;
+    transform: translate(-50%, -50%) rotate(-21deg);
+    animation: orbitSpin 14s linear infinite;
+    opacity: 0.7;
+  }
+
+  .portal-sculpt-bars {
+    position: absolute;
+    bottom: 1.2rem;
+    left: 1.25rem;
+    display: flex;
+    align-items: flex-end;
+    gap: 0.36rem;
+    height: 44px;
+  }
+
+  .portal-sculpt-bars span {
+    width: 6px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(56, 189, 248, 0.9), rgba(251, 146, 60, 0.82));
+    animation: barPulse 1.8s ease-in-out infinite;
+  }
+
+  .portal-sculpt-bars span:nth-child(1) { height: 36%; animation-delay: 0s; }
+  .portal-sculpt-bars span:nth-child(2) { height: 82%; animation-delay: 0.2s; }
+  .portal-sculpt-bars span:nth-child(3) { height: 54%; animation-delay: 0.4s; }
+  .portal-sculpt-bars span:nth-child(4) { height: 96%; animation-delay: 0.12s; }
+  .portal-sculpt-bars span:nth-child(5) { height: 44%; animation-delay: 0.34s; }
+
+  .portal-sculpt-label {
+    position: absolute;
+    right: 1.2rem;
+    bottom: 1.2rem;
+    text-align: right;
+  }
+
+  .portal-sculpt-label p {
+    font-size: 0.86rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgb(226, 232, 240);
+  }
+
+  .portal-sculpt-label span {
+    font-size: 0.65rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: rgb(148, 163, 184);
+  }
+
+  .portal-map-grid {
+    position: relative;
+    display: grid;
+    min-height: 420px;
+    gap: 0.8rem;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    grid-template-rows: repeat(8, minmax(0, 1fr));
+  }
+
+  .portal-node {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 0.5rem;
+    border-radius: 1rem;
+    border: 1px solid rgba(71, 85, 105, 0.72);
+    background:
+      linear-gradient(165deg, rgba(15, 23, 42, 0.7) 0%, rgba(8, 12, 20, 0.9) 100%),
+      radial-gradient(circle at 80% 10%, rgba(249, 115, 22, 0.1), transparent 55%);
+    padding: 0.85rem;
+    text-align: left;
+    color: rgb(241, 245, 249);
+    transition:
+      transform 280ms var(--ease-out-expo),
+      border-color 220ms var(--ease-out-quart),
+      box-shadow 260ms var(--ease-out-quart);
+    will-change: transform, box-shadow;
+    animation: portalNodeBreath 6.5s var(--ease-out-quart) infinite;
+    clip-path: polygon(4% 0, 100% 0, 96% 100%, 0 100%);
+  }
+
+  .portal-node:hover {
+    transform: translateY(-5px) scale(1.02);
+    border-color: rgba(251, 146, 60, 0.6);
+    box-shadow: 0 16px 30px rgba(0, 0, 0, 0.4);
+  }
+
+  .portal-node-1 {
+    grid-column: 1 / span 7;
+    grid-row: 1 / span 4;
+    transform: rotate(-0.6deg);
+  }
+
+  .portal-node-2 {
+    grid-column: 8 / span 5;
+    grid-row: 2 / span 3;
+    transform: rotate(0.7deg);
+  }
+
+  .portal-node-3 {
+    grid-column: 4 / span 7;
+    grid-row: 5 / span 3;
+    transform: rotate(-0.45deg);
+  }
+
+  .portal-node-vibe {
+    font-size: 0.64rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: rgb(148, 163, 184);
+    font-weight: 700;
+  }
+
+  .portal-node-code {
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-family: "Courier Prime", ui-monospace, SFMono-Regular, monospace;
+    color: rgb(251, 191, 36);
+  }
+
+  .portal-node-state {
+    font-size: 0.62rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: rgb(125, 211, 252);
+    font-weight: 700;
+  }
+
+  .portal-node-empty {
+    grid-column: 1 / -1;
+    grid-row: 2 / span 5;
+    border-radius: 1rem;
+    border: 1px dashed rgba(71, 85, 105, 0.62);
+    display: grid;
+    place-items: center;
+    color: rgb(148, 163, 184);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+  }
+
+  .lobby-wall-head {
+    margin-top: 0.6rem;
+  }
+
+  .portal-room-wall {
+    align-items: stretch;
+  }
+
+  .portal-room-tile {
+    position: relative;
+    overflow: hidden;
+    border-radius: 1.1rem;
+    border: 1px solid rgba(148, 163, 184, 0.26);
+    background:
+      linear-gradient(160deg, rgba(10, 14, 22, 0.95) 0%, rgba(12, 18, 29, 0.97) 58%, rgba(9, 12, 18, 0.99) 100%),
+      radial-gradient(circle at 82% 14%, rgba(56, 189, 248, 0.11), transparent 56%),
+      radial-gradient(circle at 18% 88%, rgba(251, 146, 60, 0.1), transparent 54%);
+    padding: 1.2rem;
+    min-height: 212px;
+    transition:
+      transform 260ms var(--ease-out-expo),
+      border-color 220ms var(--ease-out-quart),
+      box-shadow 260ms var(--ease-out-quart),
+      background-color 260ms var(--ease-out-quart),
+      opacity 200ms var(--ease-out-quart);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 12px 24px rgba(2, 7, 16, 0.3);
+  }
+
+  .portal-room-tile:hover {
+    transform: translateY(-3px);
+    border-color: rgba(251, 146, 60, 0.45);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 14px 28px rgba(15, 23, 42, 0.42);
+  }
+
+  .portal-room-tile::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 2px;
+    background: linear-gradient(180deg, rgba(56, 189, 248, 0.8), rgba(251, 146, 60, 0.5));
+    opacity: 0.64;
+    pointer-events: none;
+  }
+
+  .portal-room-tile::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, transparent 0%, rgba(15, 23, 42, 0.2) 100%);
+    pointer-events: none;
+  }
+
+  .portal-room-tile:nth-child(3n + 1) {
+    transform: none;
+  }
+
+  .portal-room-tile:nth-child(3n + 2) {
+    transform: none;
+  }
+
+  .portal-room-tile:nth-child(3n + 3) {
+    transform: none;
+  }
+
+  .portal-room-tile:nth-child(3n + 1):hover,
+  .portal-room-tile:nth-child(3n + 2):hover,
+  .portal-room-tile:nth-child(3n + 3):hover {
+    transform: translateY(-4px);
+  }
+
+  .portal-room-tile:active {
+    transform: translateY(-1px) scale(0.992);
+  }
+
+  .portal-room-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .portal-room-code {
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-family: "Courier Prime", ui-monospace, SFMono-Regular, monospace;
+    color: rgb(251, 191, 36);
+    border: 1px solid rgba(251, 146, 60, 0.36);
+    border-radius: 999px;
+    padding: 0.24rem 0.6rem;
+    background: rgba(154, 52, 18, 0.16);
+  }
+
+  .portal-room-access {
+    font-size: 0.63rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgb(148, 163, 184);
+    font-weight: 700;
+    opacity: 0.86;
+  }
+
+  .portal-room-copy {
+    max-width: 31ch;
+    color: rgba(203, 213, 225, 0.88);
+  }
+
+  .portal-room-foot {
+    border-top: 1px solid rgba(71, 85, 105, 0.44);
+    padding-top: 0.7rem;
+  }
+
+  .portal-room-enter {
+    opacity: 0.94;
+    color: rgb(226, 232, 240);
+  }
+
+  .portal-room-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(251, 146, 60, 0.84);
+    box-shadow: 0 0 0 4px rgba(251, 146, 60, 0.14);
+  }
+
+  .portal-empty-state {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 14px 32px rgba(0, 0, 0, 0.26);
+  }
+
+  .lobby-aurora {
+    position: absolute;
+    inset: -24% -16% -36% -16%;
+    opacity: 0.34;
+    background:
+      radial-gradient(52% 48% at 24% 34%, oklch(60% 0.16 35 / 0.2), transparent 75%),
+      radial-gradient(46% 48% at 84% 18%, oklch(72% 0.13 85 / 0.13), transparent 82%),
+      radial-gradient(56% 52% at 64% 96%, oklch(50% 0.08 235 / 0.13), transparent 84%);
+    animation: lobbyAuroraDrift 14s var(--ease-out-quint) infinite alternate;
+  }
+
+  .lobby-noise {
+    position: absolute;
+    inset: 0;
+    opacity: 0.035;
+    background-image: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.28) 1px, transparent 0);
+    background-size: 3px 3px;
+    mix-blend-mode: soft-light;
+    pointer-events: none;
+  }
+
+  .lobby-scanner {
+    position: absolute;
+    inset: -60% 0 auto;
+    height: 44%;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent);
+    opacity: 0.12;
+    transform: translateY(0);
+    animation: lobbyScannerSweep 12s linear infinite;
+    pointer-events: none;
+  }
+
+  .lobby-bit-trail {
+    position: absolute;
+    inset: 0;
+    opacity: 0.08;
+  }
+
+  .lobby-bits {
+    position: absolute;
+    inset: 0;
+    opacity: 0.24;
+    background-image:
+      radial-gradient(circle at 12px 12px, rgba(56, 189, 248, 0.75) 1px, transparent 1.6px),
+      radial-gradient(circle at 36px 28px, rgba(251, 146, 60, 0.7) 1px, transparent 1.6px),
+      radial-gradient(circle at 64px 18px, rgba(148, 163, 184, 0.5) 1px, transparent 1.4px);
+    background-size: 88px 56px;
+    animation: bitsFall 14s linear infinite;
+    mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.78) 12%, rgba(0, 0, 0, 0.95) 100%);
+  }
+
+  .hero-tilt-shell {
+    transform: perspective(1200px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y));
+    transform-style: preserve-3d;
+    transition: transform 220ms var(--ease-out-quart);
+    will-change: transform;
+  }
+
+  .lobby-pulse-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border-radius: 999px;
+    border: 1px solid rgba(71, 85, 105, 0.78);
+    background: rgba(2, 6, 23, 0.35);
+    padding: 0.38rem 0.72rem;
+    font-size: 0.7rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: rgb(226, 232, 240);
+    animation: lobbyChipPulse 4.8s var(--ease-out-quart) infinite;
+  }
+
+  .lobby-pulse-chip:nth-child(2) {
+    animation-delay: 0.45s;
+  }
+
+  .lobby-pulse-chip:nth-child(3) {
+    animation-delay: 0.9s;
+  }
+
+  .lobby-rooms-stage {
+    position: relative;
+    overflow: hidden;
+    background:
+      linear-gradient(162deg, rgba(11, 15, 25, 0.86) 0%, rgba(8, 11, 18, 0.92) 58%, rgba(10, 13, 21, 0.95) 100%),
+      radial-gradient(circle at 88% 8%, rgba(249, 115, 22, 0.06), transparent 45%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        0 24px 52px rgba(0, 0, 0, 0.36);
+  }
+
+  .room-page-shell {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+  }
+
+  .room-page-shell > :not(.room-page-aurora):not(.room-page-gridline) {
+    position: relative;
+    z-index: 1;
+  }
+
+  .room-page-aurora {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.46;
+    background:
+      radial-gradient(42% 34% at 10% 18%, rgba(251, 146, 60, 0.14), transparent 74%),
+      radial-gradient(44% 36% at 90% 4%, rgba(249, 115, 22, 0.11), transparent 72%),
+      radial-gradient(56% 44% at 56% 82%, rgba(194, 65, 12, 0.1), transparent 76%);
+    filter: blur(12px) saturate(108%);
+    animation: roomAuroraDrift 30s var(--ease-out-quint) infinite alternate;
+  }
+
+  .room-page-tide {
+    position: fixed;
+    inset: -24%;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.24;
+    background:
+      radial-gradient(44% 38% at 16% 22%, rgba(251, 146, 60, 0.18), transparent 74%),
+      radial-gradient(48% 38% at 78% 74%, rgba(249, 115, 22, 0.14), transparent 76%),
+      radial-gradient(36% 30% at 58% 12%, rgba(194, 65, 12, 0.1), transparent 74%);
+    filter: blur(14px);
+    animation: roomTideShift 44s var(--ease-out-quint) infinite alternate;
+  }
+
+  .room-page-dust {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.07;
+    background-image:
+      radial-gradient(circle at 14% 22%, rgba(255, 255, 255, 0.9) 0.7px, transparent 1px),
+      radial-gradient(circle at 64% 12%, rgba(251, 191, 36, 0.85) 0.7px, transparent 1px),
+      radial-gradient(circle at 82% 76%, rgba(255, 255, 255, 0.86) 0.7px, transparent 1px),
+      radial-gradient(circle at 32% 62%, rgba(148, 163, 184, 0.82) 0.6px, transparent 1px);
+    background-size: 220px 220px, 280px 280px, 260px 260px, 240px 240px;
+    animation: roomDustDrift 52s linear infinite;
+  }
+
+  .room-page-gridline {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.05;
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.2) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.16) 1px, transparent 1px);
+    background-size: 52px 52px;
+    mask-image: radial-gradient(circle at center, rgba(0, 0, 0, 0.92), transparent 80%);
+  }
+
+  .room-glass-header {
+    border-radius: 1.25rem;
+    border: 1px solid rgba(251, 146, 60, 0.11);
+    background:
+      linear-gradient(160deg, rgba(9, 13, 23, 0.56) 0%, rgba(8, 12, 20, 0.68) 60%, rgba(7, 10, 17, 0.72) 100%),
+      radial-gradient(circle at 92% 0%, rgba(251, 146, 60, 0.06), transparent 42%);
+    padding: 0.8rem 0.9rem;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      0 14px 34px rgba(0, 0, 0, 0.22);
+  }
+
+  .room-stat-chip {
+    border: 1px solid rgba(251, 146, 60, 0.12);
+    background: rgba(2, 6, 23, 0.42);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .room-video-stage {
+    border-color: rgba(251, 146, 60, 0.14);
+    background:
+      linear-gradient(180deg, rgba(2, 6, 23, 0.45) 0%, rgba(2, 6, 23, 0.16) 100%),
+      radial-gradient(circle at 84% 0%, rgba(251, 146, 60, 0.1), transparent 42%),
+      #000;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      0 26px 64px rgba(0, 0, 0, 0.5);
+  }
+
+  .room-rating-panel {
+    border-color: rgba(251, 146, 60, 0.1);
+    background:
+      linear-gradient(165deg, rgba(10, 15, 26, 0.58) 0%, rgba(9, 14, 24, 0.66) 62%, rgba(8, 12, 20, 0.72) 100%),
+      radial-gradient(circle at 84% -8%, rgba(251, 146, 60, 0.06), transparent 46%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      0 18px 40px rgba(0, 0, 0, 0.24);
+  }
+
+  .room-title-display {
+    font-family: "Cabin", "Fredoka", sans-serif;
+    font-size: 1.58rem;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    line-height: 1.18;
+    color: rgb(248, 250, 252);
+    text-wrap: balance;
+    max-width: 24ch;
+  }
+
+  .room-anime-now-title {
+    font-family: "Cabin", sans-serif;
+    font-size: 1.03rem;
+    font-weight: 600;
+    letter-spacing: 0.002em;
+    line-height: 1.28;
+    color: rgb(236, 245, 255);
+    text-wrap: pretty;
+    max-width: 42ch;
+  }
+
+  .room-anime-queue-title {
+    font-size: 0.96rem;
+    font-weight: 600;
+    letter-spacing: 0.003em;
+    line-height: 1.34;
+    color: rgb(220, 231, 244);
+    text-wrap: pretty;
+  }
+
+  .room-list-meta {
+    font-size: 0.72rem;
+    color: rgba(186, 206, 231, 0.86);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    line-height: 1.3;
+    font-weight: 600;
+  }
+
+  .room-rating-orb {
+    position: relative;
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    vertical-align: middle;
+    opacity: 0.72;
+  }
+
+  .room-rating-orb,
+  .room-rating-orb::before,
+  .room-rating-orb::after {
+    border-radius: 0;
+    background: rgba(251, 146, 60, 0.5);
+    box-shadow: none;
+    image-rendering: pixelated;
+  }
+
+  .room-rating-orb::before,
+  .room-rating-orb::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    transform: translateY(-50%);
+    animation: ratingPixelPulse 1.35s steps(3, end) infinite;
+  }
+
+  .room-rating-orb::before {
+    left: -8px;
+    animation-delay: 0s;
+  }
+
+  .room-rating-orb::after {
+    right: -8px;
+    animation-delay: 0.22s;
+  }
+
+  .room-rating-orb {
+    animation: ratingPixelCore 1.35s steps(3, end) infinite;
+    animation-delay: 0.11s;
+  }
+
+  .room-radar-panel {
+    border-radius: 1.65rem;
+    border: 1px solid rgba(251, 146, 60, 0.08);
+    background:
+      linear-gradient(160deg, rgba(8, 13, 21, 0.58) 0%, rgba(10, 16, 27, 0.54) 56%, rgba(8, 12, 19, 0.66) 100%),
+      radial-gradient(circle at 80% 0%, rgba(251, 146, 60, 0.06), transparent 48%);
+    padding: 0.9rem;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 20px 42px rgba(0, 0, 0, 0.2);
+  }
+
+  .room-radar-head {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  .room-radar-entry {
+    border-radius: 0.9rem;
+    border: 1px solid rgba(251, 146, 60, 0.07);
+    background: rgba(2, 6, 23, 0.34);
+    padding: 0.72rem;
+    transition:
+      transform 240ms var(--ease-out-expo),
+      border-color 220ms var(--ease-out-quart),
+      background-color 220ms var(--ease-out-quart),
+      box-shadow 220ms var(--ease-out-quart);
+  }
+
+  .room-radar-entry:hover {
+    transform: translateX(2px);
+    border-color: rgba(251, 146, 60, 0.22);
+    background: rgba(8, 12, 22, 0.5);
+    box-shadow: 0 10px 24px rgba(194, 65, 12, 0.14);
+  }
+
+  .room-soft-divider {
+    position: relative;
+    border-top: none;
+  }
+
+  .room-soft-divider::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent 0%, rgba(251, 146, 60, 0.3) 50%, transparent 100%);
+  }
+
+  .room-soft-block {
+    border: 1px solid rgba(251, 146, 60, 0.09);
+    background:
+      linear-gradient(160deg, rgba(8, 13, 23, 0.38) 0%, rgba(7, 12, 21, 0.5) 100%),
+      radial-gradient(circle at 90% -10%, rgba(251, 146, 60, 0.06), transparent 52%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .room-radar-entry:active {
+    transform: translateX(2px) scale(0.99);
+  }
+
+  .room-reimagine-grid {
+    position: relative;
+    z-index: 1;
+    align-items: stretch;
+  }
+
+  .room-jump-tile {
+    position: relative;
+    overflow: hidden;
+    border-radius: 1.1rem;
+    border: 1px solid rgba(71, 85, 105, 0.75);
+    background:
+      linear-gradient(168deg, rgba(15, 23, 42, 0.72) 0%, rgba(8, 12, 21, 0.92) 68%, rgba(6, 9, 16, 0.95) 100%),
+      radial-gradient(circle at 88% -10%, rgba(249, 115, 22, 0.08), transparent 54%);
+    min-height: 220px;
+    padding: 0.95rem;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 16px 36px rgba(0, 0, 0, 0.3);
+    transition:
+      transform 260ms var(--ease-out-expo),
+      border-color 220ms var(--ease-out-quart),
+      box-shadow 260ms var(--ease-out-quart);
+    will-change: transform, box-shadow;
+  }
+
+  .room-jump-tile:hover {
+    transform: translateY(-4px) rotate(-0.2deg) scale(1.006);
+    border-color: rgba(251, 146, 60, 0.62);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+        0 22px 42px rgba(0, 0, 0, 0.38);
+  }
+
+  .room-jump-tile:active {
+    transform: translateY(-2px) scale(0.99);
+  }
+
+  .room-jump-glow {
+    position: absolute;
+    inset: -54% -20% auto;
+    height: 70%;
+    background: radial-gradient(circle at 50% 50%, rgba(251, 146, 60, 0.14), transparent 72%);
+    opacity: 0.38;
+    transition: opacity 260ms var(--ease-out-quart), transform 300ms var(--ease-out-quart);
+    pointer-events: none;
+  }
+
+  .room-jump-tile:hover .room-jump-glow {
+    opacity: 0.56;
+    transform: translateY(-2%);
+  }
+
+  .room-jump-chip {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    border: 1px solid rgba(71, 85, 105, 0.72);
+    background: rgba(2, 6, 23, 0.44);
+    padding: 0.24rem 0.62rem;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: rgb(203, 213, 225);
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .room-chaos-grid {
+    position: relative;
+    z-index: 1;
+    align-items: stretch;
+  }
+
+  .party-room-tile {
+    position: relative;
+    overflow: hidden;
+    border-radius: 1.25rem;
+    border: 1px solid rgba(71, 85, 105, 0.78);
+    background:
+      linear-gradient(164deg, rgba(15, 23, 42, 0.78) 0%, rgba(9, 13, 22, 0.9) 66%, rgba(9, 12, 19, 0.95) 100%),
+      radial-gradient(circle at 80% 0%, rgba(249, 115, 22, 0.08), transparent 52%);
+    padding: 1rem;
+    min-height: 210px;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      0 18px 42px rgba(0, 0, 0, 0.35);
+    transition:
+      transform 260ms var(--ease-out-expo),
+      border-color 220ms var(--ease-out-quart),
+      box-shadow 280ms var(--ease-out-quart),
+      background-color 260ms var(--ease-out-quart);
+    will-change: transform, box-shadow;
+  }
+
+  .party-room-tile:hover {
+    transform: translateY(-6px) scale(1.012) rotate(-0.6deg);
+    border-color: rgba(251, 146, 60, 0.55);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 24px 56px rgba(0, 0, 0, 0.45);
+  }
+
+  .party-room-tile:active {
+    transform: translateY(-1px) scale(0.992);
+  }
+
+  .party-room-glow {
+    position: absolute;
+    inset: -48% -32% auto;
+    height: 75%;
+    background: radial-gradient(circle at 50% 50%, rgba(251, 146, 60, 0.22), transparent 70%);
+    opacity: 0.46;
+    transform: translateY(0);
+    transition: transform 400ms var(--ease-out-quart), opacity 260ms var(--ease-out-quart);
+    pointer-events: none;
+  }
+
+  .party-room-tile:hover .party-room-glow {
+    opacity: 0.76;
+    transform: translateY(-3%);
+  }
+
+  .party-room-chip {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    border: 1px solid rgba(71, 85, 105, 0.72);
+    background: rgba(2, 6, 23, 0.45);
+    padding: 0.26rem 0.62rem;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgb(203, 213, 225);
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .party-room-tile:nth-child(3n) {
+    transform: rotate(0.4deg);
+  }
+
+  .party-room-tile:nth-child(4n) {
+    transform: rotate(-0.45deg);
+  }
+
+  .party-room-tile:nth-child(3n):hover,
+  .party-room-tile:nth-child(4n):hover {
+    transform: translateY(-6px) scale(1.012) rotate(-0.35deg);
+  }
 }
 
 @keyframes fadeIn {
@@ -317,6 +1399,64 @@
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes roomAuroraDrift {
+  from {
+    transform: translate3d(-1.2%, -1%, 0) scale(1.01);
+  }
+
+  to {
+    transform: translate3d(1.6%, 1.8%, 0) scale(1.05);
+  }
+}
+
+@keyframes roomTideShift {
+  from {
+    transform: translate3d(-1%, -1.2%, 0) scale(1.02);
+  }
+
+  to {
+    transform: translate3d(1.5%, 1.6%, 0) scale(1.08);
+  }
+}
+
+@keyframes roomDustDrift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+
+  to {
+    transform: translate3d(-26px, 18px, 0);
+  }
+}
+
+@keyframes ratingPixelPulse {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(-50%);
+  }
+
+  40%,
+  60% {
+    opacity: 0.95;
+    transform: translateY(calc(-50% - 1px));
+  }
+}
+
+@keyframes ratingPixelCore {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+
+  40%,
+  60% {
+    opacity: 0.95;
+    transform: translateY(-1px);
   }
 }
 
@@ -348,6 +1488,192 @@
   }
 }
 
+@keyframes lobbyAuroraDrift {
+  from {
+    transform: translate3d(-1.5%, -1%, 0) scale(1);
+  }
+
+  to {
+    transform: translate3d(1.8%, 2.4%, 0) scale(1.04);
+  }
+}
+
+@keyframes plasmaDrift {
+  from {
+    transform: translate3d(-2%, -1.5%, 0) scale(1);
+  }
+
+  to {
+    transform: translate3d(2.4%, 2%, 0) scale(1.06);
+  }
+}
+
+@keyframes gridDrift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+
+  to {
+    transform: translate3d(-48px, -32px, 0);
+  }
+}
+
+@keyframes deepFieldDrift {
+  from {
+    transform: translate3d(calc(var(--bg-x, 0) * 1px), calc(var(--bg-y, 0) * 1px), 0) scale(1.06);
+  }
+
+  to {
+    transform: translate3d(calc(var(--bg-x, 0) * 1px + 18px), calc(var(--bg-y, 0) * 1px - 12px), 0) scale(1.1);
+  }
+}
+
+@keyframes waterDriftA {
+  from {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+  }
+
+  to {
+    transform: translate3d(2%, 2.2%, 0) scale(1.05);
+  }
+}
+
+@keyframes waterDriftB {
+  from {
+    transform: translate3d(2%, -1.8%, 0) scale(1.02);
+  }
+
+  to {
+    transform: translate3d(-2.5%, 1.4%, 0) scale(1.06);
+  }
+}
+
+@keyframes waterRippleDrift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+
+  to {
+    transform: translate3d(-36px, 22px, 0);
+  }
+}
+
+@keyframes lobbyScannerSweep {
+  0% {
+    transform: translateY(0);
+  }
+
+  100% {
+    transform: translateY(230%);
+  }
+}
+
+@keyframes lobbyChipPulse {
+  0%,
+  100% {
+    border-color: rgba(71, 85, 105, 0.78);
+    box-shadow: 0 0 0 rgba(251, 146, 60, 0);
+  }
+
+  50% {
+    border-color: rgba(251, 146, 60, 0.52);
+    box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.25);
+  }
+}
+
+@keyframes portalFloat {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+
+  to {
+    transform: translate3d(0, 14px, 0);
+  }
+}
+
+@keyframes portalNodeBreath {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes signalMarquee {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes sculptMorph {
+  0%,
+  100% {
+    border-radius: 46% 54% 57% 43% / 42% 53% 47% 58%;
+    transform: translate(-50%, -50%) rotate(0deg) scale(1);
+  }
+
+  50% {
+    border-radius: 58% 42% 45% 55% / 54% 39% 61% 46%;
+    transform: translate(-50%, -50%) rotate(8deg) scale(1.05);
+  }
+}
+
+@keyframes orbitSpin {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+@keyframes orbitSpinReverse {
+  from {
+    transform: translate(-50%, -50%) rotate(28deg);
+  }
+
+  to {
+    transform: translate(-50%, -50%) rotate(-332deg);
+  }
+}
+
+@keyframes barPulse {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scaleY(0.72);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scaleY(1.08);
+  }
+}
+
+@keyframes bitsFall {
+  from {
+    background-position:
+      0 0,
+      0 0,
+      0 0;
+  }
+
+  to {
+    background-position:
+      -90px 120px,
+      70px 160px,
+      -50px 110px;
+  }
+}
+
 @keyframes openingsTransitionIn {
   from {
     opacity: 0;
@@ -375,14 +1701,16 @@
 @supports (view-transition-name: none) {
   ::view-transition-group(create-room-flow),
   ::view-transition-group(room-route-stage),
-  ::view-transition-group(quick-join-stage) {
+  ::view-transition-group(quick-join-stage),
+  ::view-transition-group(account-route-stage) {
     animation-duration: 460ms;
     animation-timing-function: var(--ease-out-quint);
   }
 
   ::view-transition-old(create-room-flow),
   ::view-transition-old(room-route-stage),
-  ::view-transition-old(quick-join-stage) {
+  ::view-transition-old(quick-join-stage),
+  ::view-transition-old(account-route-stage) {
     animation-name: openingsTransitionOut;
     animation-duration: 380ms;
     animation-timing-function: var(--ease-out-quart);
@@ -390,41 +1718,236 @@
 
   ::view-transition-new(create-room-flow),
   ::view-transition-new(room-route-stage),
-  ::view-transition-new(quick-join-stage) {
+  ::view-transition-new(quick-join-stage),
+  ::view-transition-new(account-route-stage) {
     animation-name: openingsTransitionIn;
     animation-duration: 440ms;
     animation-timing-function: var(--ease-out-expo);
   }
 }
 
+@media (max-width: 1023px) {
+  .hero-tilt-shell {
+    transform: none;
+    transition: none;
+  }
+
+  .room-page-aurora {
+    opacity: 0.3;
+    filter: blur(9px);
+  }
+
+  .room-page-tide {
+    opacity: 0.16;
+    filter: blur(10px);
+  }
+
+  .room-page-dust {
+    opacity: 0.04;
+  }
+
+  .room-page-gridline {
+    opacity: 0.05;
+  }
+
+  .room-glass-header {
+    padding: 0.7rem 0.75rem;
+  }
+
+  .room-title-display {
+    font-size: 1.34rem;
+    max-width: 20ch;
+  }
+
+  .room-anime-now-title {
+    font-size: 0.94rem;
+    max-width: 30ch;
+  }
+
+
+@media (min-width: 768px) {
+  .room-title-display {
+    font-size: 1.86rem;
+  }
+
+  .room-anime-now-title {
+    font-size: 1.1rem;
+  }
+}
+  .room-radar-entry:hover,
+  .room-radar-entry:active {
+    transform: none;
+  }
+
+  .room-jump-tile {
+    min-height: 190px;
+  }
+
+  .room-jump-tile:hover {
+    transform: translateY(-3px) scale(1.004);
+  }
+
+  .lobby-portal-stage {
+    min-height: auto;
+  }
+
+  .lobby-water-sheet {
+    opacity: 0.2;
+    filter: blur(10px);
+  }
+
+  .lobby-water-ripple {
+    opacity: 0.06;
+  }
+
+  .portal-map-grid {
+    min-height: 300px;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+
+  .portal-sculpt-shell {
+    min-height: 320px;
+  }
+
+  .lobby-bits,
+  .lobby-grid-drift,
+  .lobby-deep-field {
+    opacity: 0.15;
+  }
+
+  .portal-sculpt-core {
+    width: 120px;
+    height: 120px;
+  }
+
+  .orbit-a {
+    width: 180px;
+    height: 180px;
+  }
+
+  .orbit-b {
+    width: 220px;
+    height: 150px;
+  }
+
+  .orbit-c {
+    width: 140px;
+    height: 230px;
+  }
+
+  .portal-node,
+  .portal-node-1,
+  .portal-node-2,
+  .portal-node-3 {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .portal-node {
+    animation: none;
+  }
+
+  .signal-marquee-track {
+    animation: none;
+  }
+
+  .portal-room-tile,
+  .portal-room-tile:nth-child(3n + 1),
+  .portal-room-tile:nth-child(3n + 2),
+  .portal-room-tile:nth-child(3n + 3) {
+    transform: none;
+    clip-path: none;
+    animation: none;
+  }
+
+  .portal-room-tile {
+    min-height: 190px;
+  }
+
+  .party-room-tile,
+  .party-room-tile:nth-child(3n),
+  .party-room-tile:nth-child(4n) {
+    transform: none;
+    min-height: 190px;
+  }
+
+  .party-room-tile:hover,
+  .party-room-tile:nth-child(3n):hover,
+  .party-room-tile:nth-child(4n):hover {
+    transform: translateY(-3px) scale(1.005);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-in,
   .room-enter,
+  .room-page-aurora,
+  .room-page-tide,
+  .room-page-dust,
+  .room-rating-orb,
+  .room-rating-orb::before,
+  .room-rating-orb::after,
   .rating-pop,
-  .sync-pulse {
+  .sync-pulse,
+  .lobby-aurora,
+  .lobby-scanner,
+  .lobby-pulse-chip,
+  .portal-ring,
+  .portal-node,
+  .signal-marquee-track,
+  .portal-sculpt-core,
+  .portal-sculpt-orbit,
+  .portal-sculpt-bars span,
+  .portal-room-tile,
+  .portal-room-tile::before,
+  .lobby-plasma,
+  .lobby-water-sheet-a,
+  .lobby-water-sheet-b,
+  .lobby-water-ripple,
+  .lobby-deep-field,
+  .lobby-grid-drift,
+  .lobby-particle-canvas,
+  .lobby-bits {
     animation: none !important;
     opacity: 1 !important;
-    transform: none !important;
   }
 
-  .motion-lift {
+  .motion-lift,
+  .hero-tilt-shell,
+  .lobby-particle-canvas {
     transition: none !important;
   }
 
   .motion-lift:hover,
-  .motion-lift:active {
+  .motion-lift:active,
+  .hero-tilt-shell:hover,
+  .hero-tilt-shell:active {
     transform: none !important;
   }
 
   ::view-transition-group(create-room-flow),
   ::view-transition-group(room-route-stage),
+  ::view-transition-group(account-route-stage),
   ::view-transition-group(quick-join-stage),
   ::view-transition-old(create-room-flow),
   ::view-transition-old(room-route-stage),
+  ::view-transition-old(account-route-stage),
   ::view-transition-old(quick-join-stage),
   ::view-transition-new(create-room-flow),
   ::view-transition-new(room-route-stage),
+  ::view-transition-new(account-route-stage),
   ::view-transition-new(quick-join-stage) {
     animation: none !important;
+  }
+}
+
+@media (max-width: 1439px) {
+  .lobby-water-ripple {
+    opacity: 0.05;
+  }
+
+  .lobby-noise {
+    opacity: 0.02;
   }
 }

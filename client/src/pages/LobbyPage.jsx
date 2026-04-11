@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiGet, apiPost } from "../lib/api";
 import { clearIdentity, getDefaultAvatar, getIdentity, saveIdentity } from "../lib/identity";
@@ -11,7 +11,6 @@ import {
 import {
   Plus,
   RefreshCw,
-  User,
   Layout,
   Hash,
   Globe,
@@ -20,13 +19,20 @@ import {
   CheckCircle2,
   X,
   ArrowRight,
-  LogIn,
-  PartyPopper,
-  Sparkles,
-  Ticket,
-  Music2,
+  Radio,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+
+const LobbyHeroVisual = lazy(() => import("../components/LobbyHeroVisual"));
+
+const ROOM_STAGE_LAYOUT = [
+  "lg:col-span-5",
+  "lg:col-span-3",
+  "lg:col-span-4",
+  "lg:col-span-4",
+  "lg:col-span-5",
+  "lg:col-span-3",
+];
 
 export default function LobbyPage() {
   const navigate = useNavigate();
@@ -44,9 +50,33 @@ export default function LobbyPage() {
   const [uiNotice, setUiNotice] = useState(null);
   const [createTriggerKey, setCreateTriggerKey] = useState("");
   const [createModalOrigin, setCreateModalOrigin] = useState({ x: 0, y: 18 });
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [disableHeavyMotion, setDisableHeavyMotion] = useState(false);
 
   const quickJoinCardRef = useRef(null);
   const createTriggerResetTimerRef = useRef(null);
+  const heroStageRef = useRef(null);
+  const trailCanvasRef = useRef(null);
+  const trailStateRef = useRef({
+    width: 0,
+    height: 0,
+    dpr: 1,
+    cursorX: 0,
+    cursorY: 0,
+    targetX: 0,
+    targetY: 0,
+    particles: [],
+    frameId: 0,
+    lastSpawnAt: 0,
+    lastX: 0,
+    lastY: 0,
+    hasPointer: false,
+    lastFrameAt: 0,
+    pendingPointerFrameId: 0,
+    pendingClientX: 0,
+    pendingClientY: 0,
+    stageRect: null,
+  });
 
   useEffect(() => {
     loadPublicRooms();
@@ -81,6 +111,249 @@ export default function LobbyPage() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const syncReducedMotion = () => setPrefersReducedMotion(mediaQuery.matches);
+    syncReducedMotion();
+    mediaQuery.addEventListener("change", syncReducedMotion);
+
+    return () => {
+      mediaQuery.removeEventListener("change", syncReducedMotion);
+    };
+  }, []);
+
+  useEffect(() => {
+    const coarsePointerQuery = window.matchMedia("(pointer: coarse)");
+
+    const syncPerformanceMode = () => {
+      const isSmallViewport = window.innerWidth < 1024;
+      const cpuCores = navigator.hardwareConcurrency || 8;
+      const deviceMemory = navigator.deviceMemory || 8;
+      const isConstrainedDevice = cpuCores <= 6 || deviceMemory <= 8;
+      setDisableHeavyMotion(coarsePointerQuery.matches || isSmallViewport || isConstrainedDevice);
+    };
+
+    syncPerformanceMode();
+    coarsePointerQuery.addEventListener("change", syncPerformanceMode);
+    window.addEventListener("resize", syncPerformanceMode);
+
+    return () => {
+      coarsePointerQuery.removeEventListener("change", syncPerformanceMode);
+      window.removeEventListener("resize", syncPerformanceMode);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (prefersReducedMotion || disableHeavyMotion) return;
+
+    const canvas = trailCanvasRef.current;
+    const stage = heroStageRef.current;
+    if (!canvas || !stage) return undefined;
+
+    const context = canvas.getContext("2d", { alpha: true });
+    if (!context) return undefined;
+
+    const state = trailStateRef.current;
+    let resizeObserver = null;
+
+    const resizeCanvas = () => {
+      const rect = stage.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+
+      state.stageRect = rect;
+      state.width = rect.width;
+      state.height = rect.height;
+      state.dpr = dpr;
+      canvas.width = Math.max(1, Math.round(rect.width * dpr));
+      canvas.height = Math.max(1, Math.round(rect.height * dpr));
+      canvas.style.width = `${rect.width}px`;
+      canvas.style.height = `${rect.height}px`;
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.imageSmoothingEnabled = false;
+    };
+
+    const spawnParticle = (x, y, velocityX, velocityY, energy) => {
+      if (state.particles.length >= 56) {
+        state.particles.shift();
+      }
+
+      state.particles.push({
+        x,
+        y,
+        vx: velocityX,
+        vy: velocityY,
+        life: 1,
+        size: 1.5 + Math.random() * 2.8,
+        hue: Math.random() > 0.5 ? "blue" : "amber",
+        drift: Math.random() * 0.12 + 0.02,
+        energy,
+      });
+    };
+
+    const draw = () => {
+      const now = performance.now();
+      if (now - (state.lastFrameAt || 0) < 22) {
+        state.frameId = window.requestAnimationFrame(draw);
+        return;
+      }
+
+      state.lastFrameAt = now;
+      const { width, height } = state;
+      context.clearRect(0, 0, width, height);
+
+      const cursorDx = state.targetX - state.cursorX;
+      const cursorDy = state.targetY - state.cursorY;
+      state.cursorX += cursorDx * 0.16;
+      state.cursorY += cursorDy * 0.16;
+
+      const moving = Math.abs(cursorDx) + Math.abs(cursorDy) > 0.3;
+
+      if (moving && state.hasPointer && now - state.lastSpawnAt > 52) {
+        const speed = Math.min(1.8, Math.hypot(state.targetX - state.lastX, state.targetY - state.lastY) / 12);
+        const count = speed > 1.3 ? 1 : 0;
+
+        for (let index = 0; index < count; index += 1) {
+          const spread = (Math.random() - 0.5) * 3;
+          const lift = (Math.random() - 0.5) * 2.2;
+          spawnParticle(
+            state.cursorX + spread,
+            state.cursorY + lift,
+            (Math.random() - 0.5) * 0.42 - cursorDx * 0.016,
+            (Math.random() - 0.5) * 0.42 - cursorDy * 0.016,
+            speed,
+          );
+        }
+
+        state.lastSpawnAt = now;
+        state.lastX = state.targetX;
+        state.lastY = state.targetY;
+      }
+
+      for (let index = state.particles.length - 1; index >= 0; index -= 1) {
+        const particle = state.particles[index];
+        particle.life -= 0.024 + particle.drift * 0.018;
+        particle.vx += Math.sin((now + index * 12) * 0.002) * 0.01;
+        particle.vy -= 0.005 + particle.drift * 0.006;
+        particle.x += particle.vx;
+        particle.y += particle.vy;
+
+        const alpha = Math.max(0, particle.life);
+        const size = Math.max(1, particle.size * (0.72 + alpha * 0.42));
+        const shiftX = Math.sin((now + index * 17) * 0.0018) * 0.9;
+        const shiftY = Math.cos((now + index * 13) * 0.0015) * 0.65;
+
+        context.save();
+        context.globalAlpha = alpha * 0.32;
+        context.shadowBlur = 2;
+        context.shadowColor = particle.hue === "blue" ? "rgba(56, 189, 248, 0.2)" : "rgba(251, 146, 60, 0.16)";
+        context.fillStyle = particle.hue === "blue" ? "rgba(56, 189, 248, 0.56)" : "rgba(251, 146, 60, 0.5)";
+        context.fillRect(
+          Math.round(particle.x + shiftX),
+          Math.round(particle.y + shiftY),
+          size,
+          size,
+        );
+
+        if (size > 2.5) {
+          context.globalAlpha = alpha * 0.08;
+          context.fillStyle = "rgba(255, 255, 255, 0.9)";
+          context.fillRect(
+            Math.round(particle.x + 1 + shiftX),
+            Math.round(particle.y + 1 + shiftY),
+            Math.max(1, size - 3),
+            Math.max(1, size - 3),
+          );
+        }
+        context.restore();
+
+        if (particle.life <= 0 || particle.x < -20 || particle.y < -20 || particle.x > width + 20 || particle.y > height + 20) {
+          state.particles.splice(index, 1);
+        }
+      }
+
+      if (!state.hasPointer && state.particles.length === 0 && Math.abs(cursorDx) + Math.abs(cursorDy) < 0.12) {
+        state.frameId = 0;
+        return;
+      }
+
+      state.frameId = window.requestAnimationFrame(draw);
+    };
+
+    const ensureDrawLoop = () => {
+      if (state.frameId) return;
+      state.frameId = window.requestAnimationFrame(draw);
+    };
+
+    const syncPointerFromPending = () => {
+      state.pendingPointerFrameId = 0;
+
+      const rect = state.stageRect || stage.getBoundingClientRect();
+      state.stageRect = rect;
+
+      const localX = state.pendingClientX - rect.left;
+      const localY = state.pendingClientY - rect.top;
+
+      state.targetX = Math.max(0, Math.min(rect.width, localX));
+      state.targetY = Math.max(0, Math.min(rect.height, localY));
+      state.hasPointer = true;
+
+      const x = (state.targetX / Math.max(rect.width, 1)) * 100;
+      const y = (state.targetY / Math.max(rect.height, 1)) * 100;
+      const bgX = ((x - 50) / 50) * 5;
+      const bgY = ((y - 50) / 50) * 3.5;
+
+      stage.style.setProperty("--bg-x", bgX.toFixed(2));
+      stage.style.setProperty("--bg-y", bgY.toFixed(2));
+      ensureDrawLoop();
+    };
+
+    const handlePointerMove = (event) => {
+      state.pendingClientX = event.clientX;
+      state.pendingClientY = event.clientY;
+      if (state.pendingPointerFrameId) return;
+      state.pendingPointerFrameId = window.requestAnimationFrame(syncPointerFromPending);
+    };
+
+    const handlePointerLeave = () => {
+      state.hasPointer = false;
+      state.particles = [];
+      stage.style.setProperty("--bg-x", "0");
+      stage.style.setProperty("--bg-y", "0");
+    };
+
+    const handlePointerEnter = (event) => {
+      const rect = stage.getBoundingClientRect();
+      state.stageRect = rect;
+      state.cursorX = state.targetX = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+      state.cursorY = state.targetY = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+      state.lastX = state.targetX;
+      state.lastY = state.targetY;
+      state.hasPointer = true;
+      ensureDrawLoop();
+    };
+
+    resizeCanvas();
+    resizeObserver = new ResizeObserver(() => resizeCanvas());
+    resizeObserver.observe(stage);
+    stage.addEventListener("pointermove", handlePointerMove);
+    stage.addEventListener("pointerleave", handlePointerLeave);
+    stage.addEventListener("pointerenter", handlePointerEnter);
+    state.frameId = window.requestAnimationFrame(draw);
+
+    return () => {
+      if (resizeObserver) resizeObserver.disconnect();
+      stage.removeEventListener("pointermove", handlePointerMove);
+      stage.removeEventListener("pointerleave", handlePointerLeave);
+      stage.removeEventListener("pointerenter", handlePointerEnter);
+      window.cancelAnimationFrame(state.frameId);
+      if (state.pendingPointerFrameId) {
+        window.cancelAnimationFrame(state.pendingPointerFrameId);
+      }
+      state.pendingPointerFrameId = 0;
+      state.particles = [];
+    };
+  }, [prefersReducedMotion, disableHeavyMotion]);
 
   function armElementTransition(element, transitionName) {
     if (!element || !transitionName) return;
@@ -142,6 +415,11 @@ export default function LobbyPage() {
     markPendingRoomTransition(transitionName);
     armElementTransition(sourceElement, transitionName);
     navigateWithTransition(navigate, `/room/${roomId}`);
+  }
+
+  function navigateToAccount(sourceElement) {
+    armElementTransition(sourceElement, "account-route-stage");
+    navigateWithTransition(navigate, "/auth");
   }
 
   async function syncIdentityWithServer() {
@@ -277,11 +555,17 @@ export default function LobbyPage() {
   const accountAvatarUrl = identity?.avatarUrl || getDefaultAvatar(accountDisplayName);
 
   return (
-    <div className="relative mx-auto max-w-7xl px-4 pb-12 pt-24 md:px-6 md:pb-14 md:pt-28">
+    <div className="lobby-page-shell relative mx-auto max-w-7xl px-4 pb-12 pt-24 md:px-6 md:pb-14 md:pt-28">
+      <div className="lobby-water-bg" aria-hidden="true">
+        <div className="lobby-water-sheet lobby-water-sheet-a" />
+        <div className="lobby-water-sheet lobby-water-sheet-b" />
+        <div className="lobby-water-ripple" />
+      </div>
+
       <button
         type="button"
-        className="fixed right-4 top-4 z-40 inline-flex items-center gap-3 rounded-2xl border border-slate-600/90 bg-slate-900/95 px-3 py-2 text-left shadow-2xl shadow-slate-950/70 backdrop-blur-sm transition hover:-translate-y-0.5 hover:border-brand-300/60 hover:bg-slate-900 md:right-6 md:top-6"
-        onClick={() => navigate("/auth")}
+        className="account-portal-chip absolute right-4 top-4 z-40 inline-flex items-center gap-3 rounded-2xl border px-3 py-2 text-left backdrop-blur-sm transition hover:-translate-y-0.5 md:right-6 md:top-6"
+        onClick={(event) => navigateToAccount(event.currentTarget)}
       >
         <img
           src={accountAvatarUrl}
@@ -290,16 +574,8 @@ export default function LobbyPage() {
           referrerPolicy="no-referrer"
         />
         <span className="min-w-0 leading-tight">
-          <span className="block text-xs font-bold uppercase tracking-[0.12em] text-brand-200">Account</span>
-          <span className="block truncate text-sm font-semibold text-slate-100">
-            {signedIn ? "Manage profile" : "Sign in"}
-          </span>
+          <span className="block truncate text-sm font-semibold text-slate-100">{accountDisplayName}</span>
         </span>
-        {signedIn ? (
-          <User className="h-4 w-4 shrink-0 text-brand-300" />
-        ) : (
-          <LogIn className="h-4 w-4 shrink-0 text-brand-300" />
-        )}
       </button>
 
       {uiNotice ? (
@@ -321,39 +597,61 @@ export default function LobbyPage() {
           <span className="flex-1">{uiNotice.message}</span>
           <button
             type="button"
+            aria-label="Close notice"
             className="p-1 rounded-md hover:bg-slate-900/70 transition-colors"
             onClick={() => setUiNotice(null)}
-            aria-label="Close notice"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
       ) : null}
 
-      <section className="relative overflow-hidden rounded-[32px] border border-slate-700/70 bg-slate-900/55 px-6 py-7 md:px-8 md:py-8">
+      <section
+        ref={heroStageRef}
+        className="lobby-portal-stage relative overflow-hidden rounded-[38px] border border-slate-700/70 px-6 py-7 md:px-9 md:py-9"
+      >
         <div className="pointer-events-none absolute inset-0">
-          <div className="absolute -left-20 top-12 h-48 w-48 rounded-full bg-brand-500/10 blur-3xl" />
-          <div className="absolute right-0 top-0 h-60 w-60 rounded-full bg-amber-400/8 blur-3xl" />
-          <div className="absolute inset-x-12 bottom-4 h-px bg-gradient-to-r from-transparent via-slate-500/35 to-transparent" />
+          {!disableHeavyMotion ? <canvas ref={trailCanvasRef} className="lobby-particle-canvas" aria-hidden="true" /> : null}
+          <div className="lobby-deep-field" />
+          {!disableHeavyMotion ? <div className="lobby-aurora" /> : null}
+          {!disableHeavyMotion ? <div className="lobby-noise" /> : null}
         </div>
 
-        <div className="relative grid gap-8 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
-          <div className="space-y-5">
-            <p className="inline-flex items-center gap-2 rounded-full border border-brand-700/60 bg-brand-950/35 px-3 py-1 text-xs font-bold uppercase tracking-[0.16em] text-brand-200">
-              <PartyPopper className="h-3.5 w-3.5" />
-              Opening afterparty
-            </p>
-            <h1 className="max-w-3xl text-4xl font-black leading-[0.94] text-slate-50 sm:text-5xl md:text-6xl">
-              Bring snacks.
-              <br />
-              We&apos;ll bring the bad takes.
+        <div className="relative grid gap-10 lg:grid-cols-[1fr_1.05fr] lg:items-start">
+          <motion.div
+            initial={prefersReducedMotion ? false : { opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
+            className="space-y-7"
+          >
+            <div className="inline-flex items-center gap-2 rounded-full border border-slate-700/75 bg-slate-950/35 px-3 py-1 text-[0.68rem] font-bold uppercase tracking-[0.16em] text-slate-300">
+              <Radio className="h-3.5 w-3.5" />
+              transmission open
+            </div>
+
+            <h1 className="portal-title-stack max-w-3xl text-slate-50">
+              <span className="portal-word portal-word-a">VIDEO</span>
+              <span className="portal-word portal-word-b">RANK</span>
             </h1>
-            <p className="max-w-[58ch] text-base leading-relaxed text-slate-300 md:text-lg">
-              A night room for dramatic rankings, loud opinions, and the one opening someone will defend like court
-              evidence.
+
+            <p className="max-w-[40ch] text-sm uppercase tracking-[0.12em] text-slate-400">
+              pick a signal / jump in / rank fast
             </p>
 
-            <div className="flex flex-wrap items-center gap-2.5">
+            <div className="signal-marquee" aria-hidden="true">
+              <div className="signal-marquee-track">
+                <span>live rooms</span>
+                <span>openings online</span>
+                <span>vote pressure</span>
+                <span>queue turbulence</span>
+                <span>live rooms</span>
+                <span>openings online</span>
+                <span>vote pressure</span>
+                <span>queue turbulence</span>
+              </div>
+            </div>
+
+            <div className="lobby-command-runway flex flex-wrap gap-2.5">
               <button
                 className="btn-primary inline-flex items-center gap-2"
                 onClick={(event) => {
@@ -379,7 +677,7 @@ export default function LobbyPage() {
                 aria-expanded={showQuickJoin}
               >
                 <Hash className="h-4 w-4" />
-                {showQuickJoin ? "Hide Code Entry" : "Have a Code?"}
+                {showQuickJoin ? "Hide Code" : "Join by Code"}
               </button>
 
               {signedIn ? (
@@ -391,8 +689,10 @@ export default function LobbyPage() {
             </div>
 
             {showQuickJoin ? (
-              <div ref={quickJoinCardRef} className="max-w-xl rounded-2xl border border-slate-700/80 bg-slate-950/40 p-4">
-                <p className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-slate-400">Join with invite code</p>
+              <div
+                ref={quickJoinCardRef}
+                className="quick-join-inline max-w-xl rounded-2xl border border-slate-700/80 bg-slate-950/45 p-4 backdrop-blur-sm"
+              >
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <input
                     value={inviteCode}
@@ -404,133 +704,96 @@ export default function LobbyPage() {
                     className="btn-secondary inline-flex items-center justify-center gap-2 sm:w-auto"
                     onClick={(event) => joinByCode(event.currentTarget)}
                   >
-                    Join
+                    Enter
                     <ArrowRight className="h-4 w-4" />
                   </button>
                 </div>
               </div>
             ) : null}
-          </div>
+          </motion.div>
 
-          <div className="relative">
-            <div className="absolute -left-2 top-4 h-24 w-24 rounded-full bg-brand-500/12 blur-2xl" />
-            <div className="absolute right-2 top-0 h-20 w-20 rounded-full bg-amber-400/10 blur-2xl" />
-
-            <div className="relative rotate-[-1.5deg] rounded-[30px] border border-brand-700/45 bg-gradient-to-br from-brand-950/45 via-slate-900/70 to-slate-950/60 p-4 shadow-[0_30px_80px_rgba(0,0,0,0.45)]">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-brand-200/80">Tonight&apos;s vibe</p>
-                  <p className="mt-2 text-2xl font-black text-slate-50">Maximum goblin diplomacy.</p>
-                </div>
-                <div className="rounded-full border border-slate-700 bg-slate-950/50 px-3 py-1 text-xs font-semibold text-slate-300">
-                  Bring snacks
-                </div>
-              </div>
-
-              <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                <div className="rounded-2xl border border-slate-700/80 bg-slate-950/35 p-4">
-                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Mood check</p>
-                  <p className="mt-2 text-sm leading-relaxed text-slate-200">
-                    One person is already prepared to say, &quot;No, actually, this opening is genius.&quot;
-                  </p>
-                </div>
-
-                <div className="rounded-2xl border border-slate-700/80 bg-slate-950/35 p-4">
-                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Audio warning</p>
-                  <p className="mt-2 text-sm leading-relaxed text-slate-200">
-                    Volume may spike when the first bad opinion lands.
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                <span className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-950/35 px-3 py-1.5 text-sm text-slate-200">
-                  <Sparkles className="h-4 w-4 text-brand-300" />
-                  hot takes loaded
-                </span>
-                <span className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-950/35 px-3 py-1.5 text-sm text-slate-200">
-                  <Ticket className="h-4 w-4 text-amber-300" />
-                  invite codes behaving suspiciously
-                </span>
-                <span className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-950/35 px-3 py-1.5 text-sm text-slate-200">
-                  <Music2 className="h-4 w-4 text-brand-300" />
-                  room noise: politely unhinged
-                </span>
-              </div>
-            </div>
-
-            <div className="absolute -bottom-5 right-6 rotate-[6deg] rounded-2xl border border-slate-700/80 bg-slate-950/85 px-4 py-3 shadow-[0_18px_40px_rgba(0,0,0,0.45)]">
-              <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Guest note</p>
-              <p className="mt-1 text-sm font-semibold text-slate-100">Mute button sold separately.</p>
-            </div>
-          </div>
+          <Suspense
+            fallback={
+              <div
+                className="hero-tilt-shell portal-sculpt-shell"
+                aria-hidden="true"
+              />
+            }
+          >
+            <LobbyHeroVisual prefersReducedMotion={prefersReducedMotion} />
+          </Suspense>
         </div>
       </section>
 
-      <section className="mt-10">
-        <div className="rounded-[30px] border border-slate-700/70 bg-slate-900/68 p-6">
-            <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-xl font-black text-slate-100">Live Rooms ({rooms.length})</h2>
-              <button className="btn-ghost inline-flex items-center gap-2 text-sm" onClick={loadPublicRooms} disabled={loading}>
-                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                Refresh
-              </button>
-            </div>
-
-            {rooms.length === 0 ? (
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 text-center">
-                <p className="text-slate-300">No live rooms right now.</p>
-                <div className="mt-4">
-                  <button
-                    className="btn-primary"
-                    onClick={(event) => {
-                      if (!signedIn) {
-                        navigate("/auth");
-                        return;
-                      }
-                      openCreateModal("empty-create-room", event.currentTarget);
-                    }}
-                    style={
-                      createTriggerKey === "empty-create-room"
-                        ? { viewTransitionName: UI_TRANSITIONS.CREATE_ROOM_FLOW }
-                        : undefined
-                    }
-                  >
-                    {signedIn ? "Start a public room" : "Sign in to start a room"}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-6">
-                {rooms.map((room, idx) => (
-                  <button
-                    key={room.id}
-                    className={`sub-card w-full text-left ${
-                      idx % 4 === 0
-                        ? "md:col-span-2 lg:col-span-4"
-                        : idx % 4 === 1
-                          ? "lg:col-span-2"
-                          : "lg:col-span-3"
-                    }`}
-                    onClick={(event) => {
-                      const currentIdentity = ensureIdentity();
-                      if (!currentIdentity) return;
-                      navigateToRoom(room.id, UI_TRANSITIONS.ROOM_ROUTE_STAGE, event.currentTarget);
-                    }}
-                  >
-                    <p className="mb-1 text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Room {String(idx + 1).padStart(2, "0")}</p>
-                    <div className="flex items-start justify-between gap-3">
-                      <strong className={`line-clamp-2 font-bold text-slate-100 ${idx % 4 === 0 ? "text-lg" : "text-base"}`}>
-                        {room.name}
-                      </strong>
-                      <span className="text-xs font-mono tracking-[0.08em] text-brand-300">{room.invite_code}</span>
-                    </div>
-                    <p className="mt-1 truncate text-xs text-slate-400">{room.lists?.name || "Custom list"}</p>
-                  </button>
-                ))}
-              </div>
-            )}
+      <section className="mt-12">
+        <div className="lobby-wall-head mb-5 flex items-center justify-between gap-3">
+          <h2 className="text-xl font-black uppercase tracking-[0.08em] text-slate-100">Public Rooms ({rooms.length})</h2>
+          <button className="btn-ghost inline-flex items-center gap-2 text-sm" onClick={loadPublicRooms} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
         </div>
+
+        {rooms.length === 0 ? (
+          <div className="portal-empty-state rounded-3xl border border-slate-800 bg-slate-900/40 p-8 text-center">
+            <p className="text-slate-200">No rooms live right now.</p>
+            <button
+              className="btn-primary mt-5"
+              onClick={(event) => {
+                if (!signedIn) {
+                  navigate("/auth");
+                  return;
+                }
+                openCreateModal("empty-create-room", event.currentTarget);
+              }}
+              style={
+                createTriggerKey === "empty-create-room"
+                  ? { viewTransitionName: UI_TRANSITIONS.CREATE_ROOM_FLOW }
+                  : undefined
+              }
+            >
+              {signedIn ? "Start Room" : "Sign in to Start"}
+            </button>
+          </div>
+        ) : (
+          <div className="portal-room-wall grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-12">
+            {rooms.map((room, idx) => {
+              const spanClass = ROOM_STAGE_LAYOUT[idx % ROOM_STAGE_LAYOUT.length];
+
+              return (
+                <button
+                  key={room.id}
+                  className={`portal-room-tile room-enter w-full text-left ${spanClass}`}
+                  style={{ "--enter-delay": `${Math.min(idx * 48, 320)}ms` }}
+                  onClick={(event) => {
+                    const currentIdentity = ensureIdentity();
+                    if (!currentIdentity) return;
+                    navigateToRoom(room.id, UI_TRANSITIONS.ROOM_ROUTE_STAGE, event.currentTarget);
+                  }}
+                >
+                  <div className="portal-room-row">
+                    <span className="portal-room-code">{room.invite_code}</span>
+                    <span className="portal-room-access">Public</span>
+                  </div>
+
+                  <h3 className="mt-4 line-clamp-2 text-xl font-black uppercase leading-tight text-slate-50">{room.name}</h3>
+
+                  <p className="portal-room-copy mt-3 text-sm leading-relaxed text-slate-300/90">
+                    Jump in, vote fast, and keep the room moving.
+                  </p>
+
+                  <div className="portal-room-foot mt-6 flex items-center justify-between gap-3">
+                    <span className="portal-room-enter inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] text-slate-100">
+                      Join room
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="portal-room-dot" aria-hidden="true" />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {/* Create Room Modal */}
