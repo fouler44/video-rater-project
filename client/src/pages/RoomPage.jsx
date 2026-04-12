@@ -1165,10 +1165,21 @@ export default function RoomPage() {
 
     if (type === "rating:submitted") {
       if (!currentOpeningRef.current?.id) return;
-      if (String(payload.openingId || "") !== String(currentOpeningRef.current.id)) return;
+
+      const currentOpeningId = String(currentOpeningRef.current.id || "");
+      const payloadOpeningId = String(payload.openingId || "");
+
+      // If event belongs to another opening, ignore optimistic patch but still keep normal
+      // DB subscriptions to converge state.
+      if (payloadOpeningId && payloadOpeningId !== currentOpeningId) {
+        return;
+      }
 
       const userUuid = String(payload.userUuid || "").trim();
-      if (!userUuid) return;
+      if (!userUuid) {
+        fetchCurrentOpeningVotes();
+        return;
+      }
 
       const rawScore = Number(payload.score);
       const normalizedScore = normalizeRatingValue(rawScore, rawScore);
@@ -1181,7 +1192,7 @@ export default function RoomPage() {
         });
       }
 
-      // Reconcile with DB to avoid missing decimal updates due transient realtime desync.
+      // Reconcile with DB so the UI converges even if websocket payload precision differs.
       fetchCurrentOpeningVotes();
       return;
     }

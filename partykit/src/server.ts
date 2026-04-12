@@ -108,8 +108,7 @@ const RatingSubmittedSchema = z.object({
   score: z.coerce
     .number()
     .min(1)
-    .max(10)
-    .refine((value) => Math.abs(value * 2 - Math.round(value * 2)) < 1e-6),
+    .max(10),
 });
 
 function normalizeHalfStepScore(value: number) {
