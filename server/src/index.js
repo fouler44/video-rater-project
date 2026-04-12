@@ -22,6 +22,30 @@ import {
 import { hasSupabaseConfig, supabaseAdmin } from "./supabase.js";
 
 const app = express();
+function resolveTrustProxySetting() {
+  const raw = String(process.env.TRUST_PROXY || "").trim();
+
+  // Sensible default: trust one upstream proxy in production (Render, Vercel, etc.),
+  // keep disabled in local dev unless explicitly configured.
+  if (!raw) {
+    return process.env.NODE_ENV === "production" ? 1 : false;
+  }
+
+  const lowered = raw.toLowerCase();
+  if (lowered === "true") return true;
+  if (lowered === "false") return false;
+
+  const asNumber = Number(raw);
+  if (Number.isInteger(asNumber) && asNumber >= 0) {
+    return asNumber;
+  }
+
+  // Allow Express trust-proxy subnet syntax (e.g. "loopback", "uniquelocal", "10.0.0.0/8").
+  return raw;
+}
+
+app.set("trust proxy", resolveTrustProxySetting());
+
 const REQUIRED_ENV_VARS = [
   "CLIENT_ORIGIN",
   "SUPABASE_URL",
@@ -111,6 +135,13 @@ const BackfillMalOpeningsSchema = z.object({
   listName: z.string().trim().min(1).max(120).optional(),
   delayMs: z.number().int().min(0).max(1000).optional().default(0),
 });
+
+function normalizeHalfStepScore(value, fallback = NaN) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  const rounded = Math.round(numeric * 2) / 2;
+  return Number(rounded.toFixed(1));
+}
 
 function logEvent(level, event, details = {}) {
   const payload = {
@@ -1927,7 +1958,8 @@ app.post("/api/rooms/rate", async (req, res) => {
 
   const roomId = parseSchema(RoomIdSchema, String(req.body?.roomId || "").trim(), res, "Invalid roomId");
   const openingId = parseSchema(z.string().uuid(), String(req.body?.openingId || "").trim(), res, "Invalid openingId");
-  const score = parseSchema(ScoreSchema, Number(req.body?.score), res, "Invalid score");
+  const normalizedScore = normalizeHalfStepScore(req.body?.score);
+  const score = parseSchema(ScoreSchema, normalizedScore, res, "Invalid score");
 
   if (!roomId || !openingId || score == null) {
     return res.status(400).json({ error: "Invalid rating payload" });

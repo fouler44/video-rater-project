@@ -18,6 +18,12 @@ import {
 } from "lucide-react";
 import { motion } from "motion/react";
 
+function formatScoreValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "-";
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1);
+}
+
 export default function RankingsPage() {
   const { roomId } = useParams();
   const identity = getIdentity();
@@ -121,9 +127,10 @@ export default function RankingsPage() {
       .map((opening) => {
         const scoped = ratings.filter((r) => r.list_opening_id === opening.id);
         const groupAvg = scoped.length
-          ? scoped.reduce((sum, item) => sum + item.score, 0) / scoped.length
+          ? scoped.reduce((sum, item) => sum + Number(item.score || 0), 0) / scoped.length
           : 0;
-        const myScore = scoped.find((item) => item.user_uuid === identity?.userId)?.score ?? null;
+        const myScoreRaw = scoped.find((item) => item.user_uuid === identity?.userId)?.score;
+        const myScore = myScoreRaw == null ? null : Number(myScoreRaw);
         return {
           ...opening,
           groupAvg,
@@ -274,7 +281,7 @@ export default function RankingsPage() {
 
                 <div className="text-right">
                   <div className={`text-xl font-black ${item.myScore ? 'text-brand-400' : 'text-slate-700'}`}>
-                    {item.myScore ?? "-"}
+                    {item.myScore == null ? "-" : formatScoreValue(item.myScore)}
                   </div>
                   <div className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Your Score</div>
                 </div>
