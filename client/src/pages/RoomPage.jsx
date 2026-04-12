@@ -168,6 +168,94 @@ function hasNumericValue(value) {
   return Number.isFinite(Number(value));
 }
 
+function buildVoteEntry({ userUuid, score, scoreHalfSteps, version, eventId = null, source = "unknown" }) {
+  const normalizedUserUuid = String(userUuid || "").trim();
+  const normalizedHalfSteps = Number.isInteger(Number(scoreHalfSteps))
+    ? Number(scoreHalfSteps)
+    : toScoreHalfSteps(score);
+  const normalizedScore = fromScoreHalfSteps(normalizedHalfSteps);
+  const normalizedVersion = Number(version);
+  const normalizedEventId = String(eventId || "").trim() || null;
+
+  if (!normalizedUserUuid) return null;
+  if (!Number.isInteger(normalizedHalfSteps)) return null;
+  if (!isInRatingRange(normalizedScore)) return null;
+  if (!Number.isFinite(normalizedVersion) || normalizedVersion <= 0) return null;
+
+  return {
+    user_uuid: normalizedUserUuid,
+    score: normalizedScore,
+    scoreHalfSteps: normalizedHalfSteps,
+    version: normalizedVersion,
+    eventId: normalizedEventId,
+    source,
+  };
+}
+
+function mergeVoteEntry(scopedVotes, nextEntry) {
+  const currentEntry = scopedVotes[nextEntry.user_uuid] || null;
+  const currentVersion = Number(currentEntry?.version || 0);
+
+  if (currentVersion > nextEntry.version) {
+    return {
+      scopedVotes,
+      beforeEntry: currentEntry,
+      applied: false,
+      preservedNewer: true,
+    };
+  }
+
+  const isEquivalent =
+    currentEntry
+    && currentVersion === nextEntry.version
+    && Number(currentEntry.score) === Number(nextEntry.score)
+    && Number(currentEntry.scoreHalfSteps) === Number(nextEntry.scoreHalfSteps);
+
+  if (isEquivalent) {
+    return {
+      scopedVotes,
+      beforeEntry: currentEntry,
+      applied: false,
+      preservedNewer: false,
+    };
+  }
+
+  return {
+    scopedVotes: {
+      ...scopedVotes,
+      [nextEntry.user_uuid]: nextEntry,
+    },
+    beforeEntry: currentEntry,
+    applied: true,
+    preservedNewer: false,
+  };
+}
+
+function mergeVoteSnapshot(scopedVotes, nextEntries) {
+  let nextScopedVotes = scopedVotes;
+  let appliedCount = 0;
+  let preservedNewerCount = 0;
+
+  for (const entry of nextEntries) {
+    const result = mergeVoteEntry(nextScopedVotes, entry);
+    if (result.preservedNewer) {
+      preservedNewerCount += 1;
+      continue;
+    }
+
+    if (result.applied) {
+      nextScopedVotes = result.scopedVotes;
+      appliedCount += 1;
+    }
+  }
+
+  return {
+    scopedVotes: nextScopedVotes,
+    appliedCount,
+    preservedNewerCount,
+  };
+}
+
 export default function RoomPage() {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -235,6 +323,8 @@ export default function RoomPage() {
   const nativeControlsRef = useRef(false);
   const lastRateSubmitRef = useRef({ key: "", ts: 0 });
   const inFlightRateKeysRef = useRef(new Set());
+  const voteFetchSeqRef = useRef(0);
+  const averagePatchVersionsRef = useRef(new Map());
 
   // Guard against host replay loops: state changes caused by remote sync should not be re-broadcast.
   const remotePlayerMutationUntilRef = useRef(0);
@@ -581,8 +671,100 @@ export default function RoomPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "ratings", filter: `room_id=eq.${roomId}` },
         (payload) => {
-          const openingId = String(payload?.new?.list_opening_id || payload?.old?.list_opening_id || "").trim();
-          fetchCurrentOpeningVotes(openingId || undefined);
+          const eventType = String(payload?.eventType || "").trim().toUpperCase();
+          const nextRow = payload?.new || null;
+          const previousRow = payload?.old || null;
+          const openingId = String(nextRow?.list_opening_id || previousRow?.list_opening_id || "").trim();
+          const userUuid = String(nextRow?.user_uuid || previousRow?.user_uuid || "").trim();
+          const submittedAtRaw = nextRow?.submitted_at || previousRow?.submitted_at || payload?.commit_timestamp || null;
+          const version = Number(new Date(submittedAtRaw || 0).getTime() || 0);
+          const voteEntry = buildVoteEntry({
+            userUuid,
+            score: nextRow?.score,
+            version,
+            eventId: null,
+            source: "db-change",
+          });
+
+          console.info("[rating_db_change_received]", {
+            roomId,
+            openingId: openingId || null,
+            userUuid: userUuid || null,
+            eventType,
+            scoreRaw: nextRow?.score ?? null,
+            scoreHalfSteps: Number.isInteger(Number(voteEntry?.scoreHalfSteps))
+              ? Number(voteEntry.scoreHalfSteps)
+              : null,
+            version: Number.isFinite(version) && version > 0 ? version : null,
+            commitTimestamp: payload?.commit_timestamp || null,
+            source: "db-change",
+            timestamp: Date.now(),
+          });
+
+          if (openingId && eventType !== "DELETE" && voteEntry) {
+            setVotesByOpeningId((prev) => {
+              const scopedVotes = prev[openingId] || {};
+              const result = mergeVoteEntry(scopedVotes, voteEntry);
+              const beforeEntry = result.beforeEntry;
+              const beforeVersion = Number(result.beforeEntry?.version || 0);
+
+              if (result.preservedNewer) {
+                console.info("[rating_db_change_discarded]", {
+                  roomId,
+                  openingId,
+                  userUuid,
+                  eventType,
+                  version: voteEntry.version,
+                  beforeVersion,
+                  beforeScore: Number(result.beforeEntry?.score ?? NaN) || null,
+                  afterScore: voteEntry.score,
+                  reason: "stale_version",
+                  source: "db-change",
+                  timestamp: Date.now(),
+                });
+                return prev;
+              }
+
+              if (!result.applied) {
+                return prev;
+              }
+
+              patchUserAverageFromRating(userUuid, voteEntry.score, beforeEntry?.score ?? null, {
+                openingId,
+                version: voteEntry.version,
+                source: "db-change",
+              });
+
+              console.info("[rating_db_change_applied]", {
+                roomId,
+                openingId,
+                userUuid,
+                eventType,
+                version: voteEntry.version,
+                beforeVersion: beforeVersion || null,
+                beforeScore: Number(result.beforeEntry?.score ?? NaN) || null,
+                afterScore: voteEntry.score,
+                source: "db-change",
+                timestamp: Date.now(),
+              });
+
+              return {
+                ...prev,
+                [openingId]: result.scopedVotes,
+              };
+            });
+          } else if (openingId) {
+            console.info("[rating_refetch_triggered]", {
+              roomId,
+              openingId,
+              eventType,
+              reason: "db_change_fallback",
+              source: "fetch",
+              timestamp: Date.now(),
+            });
+            fetchCurrentOpeningVotes(openingId);
+          }
+
           fetchRoomUserAverages();
         },
       )
@@ -1237,8 +1419,16 @@ export default function RoomPage() {
       const normalizedScore = fromScoreHalfSteps(scoreHalfSteps);
       const version = Number(payload.version || Date.now());
       const eventId = String(payload.eventId || "").trim() || null;
+      const voteEntry = buildVoteEntry({
+        userUuid,
+        score: normalizedScore,
+        scoreHalfSteps,
+        version,
+        eventId,
+        source: "ws",
+      });
 
-      if (!Number.isInteger(scoreHalfSteps) || !isInRatingRange(normalizedScore)) {
+      if (!voteEntry) {
         console.info("[rating_ws_discarded]", {
           roomId,
           openingId: payloadOpeningId,
@@ -1255,20 +1445,21 @@ export default function RoomPage() {
 
       setVotesByOpeningId((prev) => {
         const scopedVotes = prev[payloadOpeningId] || {};
-        const beforeEntry = scopedVotes[userUuid] || null;
+        const result = mergeVoteEntry(scopedVotes, voteEntry);
+        const beforeEntry = result.beforeEntry;
         const beforeVersion = Number(beforeEntry?.version || 0);
         const beforeScore = Number(beforeEntry?.score ?? NaN);
 
-        if (beforeVersion > version) {
+        if (result.preservedNewer) {
           console.info("[rating_ws_discarded]", {
             roomId,
             openingId: payloadOpeningId,
             userUuid,
             eventId,
-            version,
+            version: voteEntry.version,
             beforeVersion,
             beforeScore,
-            afterScore: normalizedScore,
+            afterScore: voteEntry.score,
             reason: "stale_version",
             source: "ws",
             timestamp: Date.now(),
@@ -1276,20 +1467,15 @@ export default function RoomPage() {
           return prev;
         }
 
-        const next = {
-          ...prev,
-          [payloadOpeningId]: {
-            ...scopedVotes,
-            [userUuid]: {
-              user_uuid: userUuid,
-              score: normalizedScore,
-              scoreHalfSteps,
-              version,
-              eventId,
-              source: "ws",
-            },
-          },
-        };
+        if (!result.applied) {
+          return prev;
+        }
+
+        patchUserAverageFromRating(userUuid, voteEntry.score, beforeEntry?.score ?? null, {
+          openingId: payloadOpeningId,
+          version: voteEntry.version,
+          source: "ws",
+        });
 
         console.info("[rating_ws_applied]", {
           roomId,
@@ -1297,26 +1483,21 @@ export default function RoomPage() {
           currentOpeningId: String(currentOpeningRef.current?.id || "") || null,
           userUuid,
           eventId,
-          version,
+          version: voteEntry.version,
           scoreRaw: payload.score,
-          scoreHalfSteps,
+          scoreHalfSteps: voteEntry.scoreHalfSteps,
           beforeScore: Number.isFinite(beforeScore) ? beforeScore : null,
-          afterScore: normalizedScore,
+          afterScore: voteEntry.score,
           source: "ws",
           timestamp: Date.now(),
         });
 
-        return next;
+        return {
+          ...prev,
+          [payloadOpeningId]: result.scopedVotes,
+        };
       });
 
-      console.info("[rating_refetch_triggered]", {
-        roomId,
-        openingId: payloadOpeningId,
-        reason: "post_ws_reconcile",
-        source: "fetch",
-        timestamp: Date.now(),
-      });
-      fetchCurrentOpeningVotes(payloadOpeningId);
       return;
     }
 
@@ -1560,6 +1741,17 @@ export default function RoomPage() {
       return;
     }
 
+    const requestSeq = voteFetchSeqRef.current + 1;
+    voteFetchSeqRef.current = requestSeq;
+
+    console.info("[rating_refetch_start]", {
+      roomId,
+      openingId,
+      requestSeq,
+      source: "db",
+      timestamp: Date.now(),
+    });
+
     const { data, error } = await supabase
       .from("ratings")
       .select("user_uuid,score,submitted_at")
@@ -1567,36 +1759,45 @@ export default function RoomPage() {
       .eq("list_opening_id", openingId);
 
     if (!error) {
-      setVotesByOpeningId((prev) => {
-        const scopedVotes = {};
+      const nextEntries = [];
 
-        for (const row of data || []) {
-          const userUuid = String(row?.user_uuid || "").trim();
-          const scoreHalfSteps = toScoreHalfSteps(row?.score);
-          const score = fromScoreHalfSteps(scoreHalfSteps);
-          if (!userUuid || !Number.isInteger(scoreHalfSteps) || !isInRatingRange(score)) continue;
+      for (const row of data || []) {
+        const voteEntry = buildVoteEntry({
+          userUuid: row?.user_uuid,
+          score: row?.score,
+          version: new Date(row?.submitted_at || 0).getTime(),
+          eventId: null,
+          source: "db",
+        });
 
-          scopedVotes[userUuid] = {
-            user_uuid: userUuid,
-            score,
-            scoreHalfSteps,
-            version: Number(new Date(row?.submitted_at || 0).getTime() || 0),
-            eventId: null,
-            source: "db",
-          };
+        if (voteEntry) {
+          nextEntries.push(voteEntry);
         }
+      }
+
+      setVotesByOpeningId((prev) => {
+        const scopedVotes = prev[openingId] || {};
+        const result = mergeVoteSnapshot(scopedVotes, nextEntries);
 
         console.info("[rating_refetch_applied]", {
           roomId,
           openingId,
+          requestSeq,
           source: "db",
-          count: Object.keys(scopedVotes).length,
+          fetchedCount: nextEntries.length,
+          storedCount: Object.keys(result.scopedVotes).length,
+          appliedCount: result.appliedCount,
+          preservedNewerCount: result.preservedNewerCount,
           timestamp: Date.now(),
         });
 
+        if (result.scopedVotes === scopedVotes) {
+          return prev;
+        }
+
         return {
           ...prev,
-          [openingId]: scopedVotes,
+          [openingId]: result.scopedVotes,
         };
       });
     }
@@ -1634,7 +1835,38 @@ export default function RoomPage() {
     setRoomUserStats(next);
   }
 
-  function patchUserAverageFromRating(userUuid, score, previousOpeningScore = null) {
+  function patchUserAverageFromRating(
+    userUuid,
+    score,
+    previousOpeningScore = null,
+    { openingId = "", version = 0, source = "unknown" } = {},
+  ) {
+    const normalizedUserUuid = String(userUuid || "").trim();
+    const normalizedOpeningId = String(openingId || "").trim();
+    const normalizedVersion = Number(version);
+    const patchKey = normalizedOpeningId && normalizedUserUuid
+      ? `${normalizedOpeningId}:${normalizedUserUuid}`
+      : "";
+
+    if (patchKey && Number.isFinite(normalizedVersion) && normalizedVersion > 0) {
+      const previousPatchedVersion = Number(averagePatchVersionsRef.current.get(patchKey) || 0);
+      if (previousPatchedVersion >= normalizedVersion) {
+        console.info("[rating_avg_patch_skipped]", {
+          roomId,
+          openingId: normalizedOpeningId,
+          userUuid: normalizedUserUuid,
+          version: normalizedVersion,
+          previousPatchedVersion,
+          source,
+          reason: "duplicate_or_stale_version",
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      averagePatchVersionsRef.current.set(patchKey, normalizedVersion);
+    }
+
     setRoomUserStats((prev) => {
       const current = prev[userUuid] || { avg: 0, count: 0 };
       const currentAvg = Number(current.avg);
@@ -1652,10 +1884,25 @@ export default function RoomPage() {
 
       if (count <= 0) return prev;
 
+      const nextAvg = sum / count;
+
+      console.info("[rating_avg_patch_applied]", {
+        roomId,
+        openingId: normalizedOpeningId || null,
+        userUuid: normalizedUserUuid || null,
+        version: Number.isFinite(normalizedVersion) && normalizedVersion > 0 ? normalizedVersion : null,
+        source,
+        previousOpeningScore: hasNumericValue(previousOpeningScore) ? Number(previousOpeningScore) : null,
+        nextScore: Number(score),
+        nextAvg,
+        nextCount: count,
+        timestamp: Date.now(),
+      });
+
       return {
         ...prev,
         [userUuid]: {
-          avg: sum / count,
+          avg: nextAvg,
           count,
         },
       };
@@ -1757,32 +2004,43 @@ export default function RoomPage() {
         );
       }
 
-      const scoreHalfSteps = Number(response?.rating?.score_half_steps || toScoreHalfSteps(persistedScore));
+      const persistedScoreHalfSteps = Number(
+        response?.rating?.score_half_steps || toScoreHalfSteps(persistedScore),
+      );
       const version = Number(response?.rating?.version || Date.now());
       const eventId = String(response?.rating?.event_id || "").trim() || null;
-
-      setVotesByOpeningId((prev) => {
-        const openingId = String(currentOpening.id || "").trim();
-        const scopedVotes = prev[openingId] || {};
-        const previousVote = scopedVotes[identity.userId] || null;
-
-        patchUserAverageFromRating(identity.userId, persistedScore, previousVote?.score ?? null);
-
-        return {
-          ...prev,
-          [openingId]: {
-            ...scopedVotes,
-            [identity.userId]: {
-              user_uuid: identity.userId,
-              score: persistedScore,
-              scoreHalfSteps,
-              version,
-              eventId,
-              source: "api",
-            },
-          },
-        };
+      const voteEntry = buildVoteEntry({
+        userUuid: identity.userId,
+        score: persistedScore,
+        scoreHalfSteps: persistedScoreHalfSteps,
+        version,
+        eventId,
+        source: "api",
       });
+
+      if (voteEntry) {
+        setVotesByOpeningId((prev) => {
+          const openingId = String(currentOpening.id || "").trim();
+          const scopedVotes = prev[openingId] || {};
+          const previousVote = scopedVotes[identity.userId] || null;
+          const result = mergeVoteEntry(scopedVotes, voteEntry);
+
+          if (!result.applied) {
+            return prev;
+          }
+
+          patchUserAverageFromRating(identity.userId, persistedScore, previousVote?.score ?? null, {
+            openingId,
+            version: voteEntry.version,
+            source: "api",
+          });
+
+          return {
+            ...prev,
+            [openingId]: result.scopedVotes,
+          };
+        });
+      }
       fetchRoomUserAverages();
       console.info("[rating_ws_emit]", {
         roomId,
@@ -1790,7 +2048,7 @@ export default function RoomPage() {
         userUuid: identity.userId,
         scoreRaw: persistedScore,
         scoreNumber: persistedScore,
-        scoreHalfSteps: Number(response?.rating?.score_half_steps || toScoreHalfSteps(persistedScore)),
+        scoreHalfSteps: persistedScoreHalfSteps,
         eventId: String(response?.rating?.event_id || "") || null,
         version: Number(response?.rating?.version || 0) || null,
         source: "ws",
@@ -1799,7 +2057,7 @@ export default function RoomPage() {
       });
       sendPartyEvent("rating:submitted", {
         openingId: currentOpening.id,
-        scoreHalfSteps: Number(response?.rating?.score_half_steps || toScoreHalfSteps(persistedScore)),
+        scoreHalfSteps: persistedScoreHalfSteps,
         score: persistedScore,
         version: Number(response?.rating?.version || Date.now()),
         eventId: String(response?.rating?.event_id || "").trim() || undefined,
