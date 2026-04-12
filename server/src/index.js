@@ -51,6 +51,33 @@ const PARTYKIT_API_SIGNING_SECRET = String(process.env.PARTYKIT_API_SIGNING_SECR
 const INTERNAL_MAX_SKEW_MS = 30_000;
 const usedInternalNonces = new Map();
 
+/** Simple idempotency cache for shuffle operations. Keyed by roomId:idempotencyKey */
+class IdempotencyCache {
+  constructor(ttlMs = 10 * 60 * 1000) { // 10 minutes
+    this.ttlMs = ttlMs;
+    this.store = new Map();
+  }
+
+  get(key) {
+    const entry = this.store.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      this.store.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  set(key, value) {
+    this.store.set(key, {
+      value,
+      expiresAt: Date.now() + this.ttlMs,
+    });
+  }
+}
+
+const idempotencyCache = new IdempotencyCache();
+
 const RoomIdSchema = z.string().uuid();
 const ListIdSchema = z.string().uuid();
 const ScoreSchema = z.number().min(1).max(10).multipleOf(0.5);
@@ -1517,6 +1544,151 @@ app.post("/api/internal/rooms/:roomId/advance", async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Could not advance opening" });
+  }
+});
+
+/**
+ * PUBLIC endpoint for shuffling room queue with idempotency support.
+ * Returns canonical openings order from the server.
+ * Persists DB changes before responding to guarantee reload safety.
+ */
+app.post("/api/rooms/:roomId/shuffle", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const roomId = String(req.params.roomId || "").trim();
+  const userId = String(auth.user.id || "").trim();
+  const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
+
+  if (!roomId || !userId || !idempotencyKey) {
+    return res.status(400).json({
+      error: "Missing roomId, userId, or idempotencyKey",
+    });
+  }
+
+  const cacheKey = `${roomId}:${idempotencyKey}`;
+
+  // Check if this shuffle has already been processed
+  const cachedResult = idempotencyCache.get(cacheKey);
+  if (cachedResult) {
+    return res.json(cachedResult);
+  }
+
+  try {
+    // Fetch room and validate permissions
+    const { data: room, error: roomError } = await supabaseAdmin
+      .from("rooms")
+      .select("id,list_id,current_opening_index,status,host_uuid,owner_user_id")
+      .eq("id", roomId)
+      .maybeSingle();
+
+    if (roomError) return res.status(500).json({ error: roomError.message });
+    if (!room) return res.status(404).json({ error: "Room not found" });
+
+    if (room.status === "finished") {
+      return res.status(409).json({ error: "Finished rooms cannot be shuffled" });
+    }
+
+    const canAct = canControlRoom(auth.user, room);
+
+    if (!canAct) {
+      return res.status(403).json({ error: "Only host or owner can shuffle" });
+    }
+
+    // Fetch openings and shuffle
+    const openings = await fetchListOpenings(room.list_id);
+
+    if (openings.length <= 1) {
+      const result = {
+        txnId: `shuffle-${roomId}-${Date.now()}`,
+        shuffled: false,
+        room: {
+          id: room.id,
+          status: room.status,
+          current_opening_index: Number(room.current_opening_index || 0),
+          host_uuid: room.host_uuid,
+        },
+        openings,
+        currentOpening: openings[0] || null,
+        queueVersion: Date.now(),
+      };
+      idempotencyCache.set(cacheKey, result);
+      return res.json(result);
+    }
+
+    // Perform the shuffle locally and compute new order
+    const shuffledOpenings = shuffleArray(openings);
+    const previousOrderById = new Map(
+      openings.map((opening) => [opening.id, Number(opening.order_index)])
+    );
+
+    // Calculate which items need updates
+    const orderUpdates = shuffledOpenings
+      .map((opening, index) => ({
+        id: opening.id,
+        list_id: opening.list_id,
+        anime_id: opening.anime_id,
+        anime_title: opening.anime_title,
+        opening_label: opening.opening_label,
+        youtube_video_id: opening.youtube_video_id || null,
+        thumbnail_url: opening.thumbnail_url || null,
+        order_index: index,
+      }))
+      .filter((row) => {
+        const previousOrder = previousOrderById.get(row.id);
+        return previousOrder !== row.order_index;
+      });
+
+    const txnId = `shuffle-${roomId}-${Date.now()}`;
+    const newQueueVersion = Date.now();
+
+    // Persist order updates first so reload always sees the shuffled order.
+    if (orderUpdates.length > 0) {
+      for (let start = 0; start < orderUpdates.length; start += BULK_INSERT_CHUNK_SIZE) {
+        const chunk = orderUpdates.slice(start, start + BULK_INSERT_CHUNK_SIZE);
+        const { error: updateError } = await supabaseAdmin
+          .from("list_openings")
+          .upsert(chunk, { onConflict: "id" });
+
+        if (updateError) {
+          return res.status(500).json({ error: updateError.message || "Could not persist shuffled order" });
+        }
+      }
+    }
+
+    const openingsResponse = shuffledOpenings.map((opening, index) => ({
+      ...opening,
+      order_index: index,
+    }));
+
+    const { data: updatedRoom, error: updateRoomError } = await supabaseAdmin
+      .from("rooms")
+      .update({
+        current_opening_index: -1,
+      })
+      .eq("id", roomId)
+      .select("id,status,current_opening_index,host_uuid")
+      .single();
+
+    if (updateRoomError) {
+      return res.status(500).json({ error: updateRoomError.message || "Could not update room after shuffle" });
+    }
+
+    const result = {
+      txnId,
+      shuffled: true,
+      room: updatedRoom,
+      openings: openingsResponse,
+      currentOpening: null,
+      queueVersion: newQueueVersion,
+    };
+
+    idempotencyCache.set(cacheKey, result);
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Could not shuffle queue" });
   }
 });
 

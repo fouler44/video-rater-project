@@ -58,6 +58,16 @@ function formatAverageRatingValue(value) {
   return numeric.toFixed(2).replace(/(\.\d)0$/, "$1");
 }
 
+function formatAnimeTitleWithTheme(opening) {
+  const animeTitle = String(opening?.anime_title || "").trim();
+  const themeKind = String(opening?.theme_kind || "").trim();
+
+  if (!animeTitle) return themeKind || "Unknown anime";
+  if (!themeKind) return animeTitle;
+
+  return `${animeTitle} (${themeKind})`;
+}
+
 function ensureYoutubeIframeApi() {
   if (window.YT?.Player) return Promise.resolve(window.YT);
   if (youtubeIframePromise) return youtubeIframePromise;
@@ -1501,14 +1511,54 @@ export default function RoomPage() {
 
     setActionLoading(true);
     setShuffleLoading(true);
-    setRoom((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        current_opening_index: -1,
-      };
-    });
-    sendPartyEvent("queue:shuffle", {});
+
+    try {
+      // Generate unique idempotency key to prevent duplicate shuffles
+      const idempotencyKey = `${identity.userId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      // HTTP request to server - returns immediately with result
+      const result = await apiPost(`/api/rooms/${roomId}/shuffle`, {
+        idempotencyKey,
+      });
+
+      if (Array.isArray(result.openings)) {
+        setOpenings(result.openings);
+      }
+
+      const roomPatch = result.room || {};
+      const nextStatus = String(roomPatch.status || "");
+      const nextIndex = Number(roomPatch.current_opening_index);
+
+      setRoom((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          status: nextStatus || prev.status,
+          current_opening_index: Number.isInteger(nextIndex) ? nextIndex : -1,
+          host_uuid: String(roomPatch.host_uuid || prev.host_uuid || ""),
+        };
+      });
+
+      if (roomPatch.host_uuid) {
+        setHostUuid(String(roomPatch.host_uuid));
+      }
+
+      // Notify other users with the same canonical order returned by server.
+      sendPartyEvent("queue:shuffle:synced", {
+        txnId: result.txnId,
+        queueVersion: result.queueVersion,
+        room: result.room || null,
+        openings: Array.isArray(result.openings) ? result.openings : [],
+      });
+
+      // Clear loading state as soon as canonical shuffled state is applied
+      setActionLoading(false);
+      setShuffleLoading(false);
+    } catch (error) {
+      setActionLoading(false);
+      setShuffleLoading(false);
+      showNotice(error.message || "Could not shuffle queue", "error");
+    }
   }
 
   function sendOpeningAdvance(targetIndex, finish = false, force = false) {
@@ -1732,7 +1782,7 @@ export default function RoomPage() {
           {room?.status === "playing" && currentOpening && (
             <div className="room-radar-panel room-enter flex items-center justify-between px-4 md:px-5 py-2.5" style={{ "--enter-delay": "120ms" }}>
               <div>
-                <h3 className="room-anime-now-title">{currentOpening.anime_title}</h3>
+                <h3 className="room-anime-now-title">{formatAnimeTitleWithTheme(currentOpening)}</h3>
                 <p className="text-[11px] text-slate-400 uppercase tracking-[0.11em]">{currentOpening.opening_label}</p>
               </div>
               <div className="room-jump-chip bg-brand-400/85 px-3 py-1 text-xs font-black shadow-lg text-slate-950 border-0">
@@ -2115,7 +2165,7 @@ export default function RoomPage() {
                           </div>
                           <div className="min-w-0 flex-1">
                             <p className="room-anime-queue-title truncate flex items-center gap-2">
-                              {opening.anime_title}
+                              {formatAnimeTitleWithTheme(opening)}
                               {isCurrent && <CheckCircle2 className="w-4 h-4 text-brand-300 shrink-0" />}
                             </p>
                             <p className="text-xs text-slate-500 truncate">{opening.opening_label}</p>

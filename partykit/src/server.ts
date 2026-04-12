@@ -84,7 +84,7 @@ type Envelope = {
   payload?: any;
 };
 
-const HOST_ONLY_TYPES = new Set(["player:state", "player:sync", "opening:next", "queue:shuffle"]);
+const HOST_ONLY_TYPES = new Set(["player:state", "player:sync", "opening:next", "queue:shuffle", "queue:shuffle:synced"]);
 const DEFAULT_GRACE_MS = 2500;
 
 const PlayerStateSchema = z.object({
@@ -359,6 +359,50 @@ export default class AnimeRoomParty implements Party.Server {
       if (!parsed.success) return;
 
       await this.handleQueueShuffle(senderMember.userUuid);
+      return;
+    }
+
+    if (envelope.type === "queue:shuffle:synced") {
+      // Broadcast canonical shuffle payload (already persisted by HTTP API)
+      await this.ensureHydrated();
+
+      const shuffledOpeningsArray = Array.isArray(envelope.payload?.openings)
+        ? envelope.payload.openings
+        : Array.from(this.openingsByIndex.values()).sort((a, b) => Number(a.order_index) - Number(b.order_index));
+
+      this.openingsByIndex.clear();
+      for (const opening of shuffledOpeningsArray) {
+        this.openingsByIndex.set(Number(opening.order_index), opening);
+      }
+
+      const roomPatch = envelope.payload?.room || {};
+      this.currentOpeningIndex = Number.isInteger(Number(roomPatch.current_opening_index))
+        ? Number(roomPatch.current_opening_index)
+        : -1;
+      if (roomPatch.status) {
+        this.roomStatus = roomPatch.status;
+      }
+      if (roomPatch.host_uuid) {
+        this.hostUuid = String(roomPatch.host_uuid);
+      }
+
+      this.party.broadcast(
+        JSON.stringify({
+          type: "queue:shuffled",
+          payload: {
+            room: {
+              id: this.party.id,
+              status: this.roomStatus,
+              current_opening_index: this.currentOpeningIndex,
+              host_uuid: this.hostUuid,
+            },
+            txnId: envelope.payload?.txnId || "",
+            queueVersion: envelope.payload?.queueVersion || Date.now(),
+            openings: shuffledOpeningsArray,
+            currentOpening: null,
+          },
+        }),
+      );
       return;
     }
   }
