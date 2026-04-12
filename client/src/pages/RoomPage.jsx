@@ -1115,6 +1115,7 @@ export default function RoomPage() {
       if (!userUuid || !isValidRatingValue(score)) return;
 
       setCurrentOpeningVotes((prev) => upsertVote(prev, { user_uuid: userUuid, score }));
+      fetchRoomUserAverages();
       return;
     }
 
