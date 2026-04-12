@@ -136,6 +136,10 @@ function upsertVote(votes, nextVote) {
   });
 }
 
+function hasNumericValue(value) {
+  return Number.isFinite(Number(value));
+}
+
 export default function RoomPage() {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -156,7 +160,7 @@ export default function RoomPage() {
   const [myRating, setMyRating] = useState(0);
   const [sliderRating, setSliderRating] = useState(5);
   const [currentOpeningVotes, setCurrentOpeningVotes] = useState([]);
-  const [roomUserAverages, setRoomUserAverages] = useState({});
+  const [roomUserStats, setRoomUserStats] = useState({});
   const [hostUuid, setHostUuid] = useState("");
 
   const [graceUntilTs, setGraceUntilTs] = useState(0);
@@ -362,6 +366,16 @@ export default function RoomPage() {
     () => Object.fromEntries(currentOpeningVotes.map((row) => [row.user_uuid, row.score])),
     [currentOpeningVotes],
   );
+
+  const roomUserAverages = useMemo(() => {
+    const next = {};
+    for (const [userUuid, stats] of Object.entries(roomUserStats)) {
+      const avg = Number(stats?.avg);
+      if (!Number.isFinite(avg)) continue;
+      next[userUuid] = avg;
+    }
+    return next;
+  }, [roomUserStats]);
 
   const activeUserSet = useMemo(() => new Set(connectedUserUuids), [connectedUserUuids]);
 
@@ -1114,8 +1128,11 @@ export default function RoomPage() {
 
       if (!userUuid || !isValidRatingValue(score)) return;
 
-      setCurrentOpeningVotes((prev) => upsertVote(prev, { user_uuid: userUuid, score }));
-      fetchRoomUserAverages();
+        setCurrentOpeningVotes((prev) => {
+          const previousVote = prev.find((item) => item.user_uuid === userUuid);
+          patchUserAverageFromRating(userUuid, score, previousVote?.score ?? null);
+          return upsertVote(prev, { user_uuid: userUuid, score });
+        });
       return;
     }
 
@@ -1368,10 +1385,41 @@ export default function RoomPage() {
     const next = {};
     for (const [userUuid, entry] of aggregates.entries()) {
       if (!entry.count) continue;
-      next[userUuid] = entry.sum / entry.count;
+      next[userUuid] = {
+        avg: entry.sum / entry.count,
+        count: entry.count,
+      };
     }
 
-    setRoomUserAverages(next);
+    setRoomUserStats(next);
+  }
+
+  function patchUserAverageFromRating(userUuid, score, previousOpeningScore = null) {
+    setRoomUserStats((prev) => {
+      const current = prev[userUuid] || { avg: 0, count: 0 };
+      const currentAvg = Number(current.avg);
+      const currentCount = Number(current.count);
+
+      let count = Number.isFinite(currentCount) ? currentCount : 0;
+      let sum = (Number.isFinite(currentAvg) ? currentAvg : 0) * count;
+
+      if (hasNumericValue(previousOpeningScore)) {
+        sum = sum - Number(previousOpeningScore) + Number(score);
+      } else {
+        count += 1;
+        sum += Number(score);
+      }
+
+      if (count <= 0) return prev;
+
+      return {
+        ...prev,
+        [userUuid]: {
+          avg: sum / count,
+          count,
+        },
+      };
+    });
   }
 
   async function upsertMyPresence() {
@@ -1393,8 +1441,12 @@ export default function RoomPage() {
         score: numericScore,
       });
 
-      setCurrentOpeningVotes((prev) => upsertVote(prev, { user_uuid: identity.userId, score: numericScore }));
-      await fetchRoomUserAverages();
+      setCurrentOpeningVotes((prev) => {
+        const previousVote = prev.find((item) => item.user_uuid === identity.userId);
+        patchUserAverageFromRating(identity.userId, numericScore, previousVote?.score ?? null);
+        return upsertVote(prev, { user_uuid: identity.userId, score: numericScore });
+      });
+      fetchRoomUserAverages();
       sendPartyEvent("rating:submitted", {
         openingId: currentOpening.id,
         score: numericScore,
