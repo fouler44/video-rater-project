@@ -2061,21 +2061,11 @@ export default function RoomPage() {
   }
 
   async function handleStartRoom() {
-    if (!isHost) return;
+    if (!isHost || !room) return;
 
-    setActionLoading(true);
-    try {
-      const data = await apiPost("/api/rooms/status", { roomId, status: "playing" });
-      setRoom((prev) => ({ ...(prev || {}), ...(data.room || {}) }));
-      setGraceUntilTs(Date.now() + OPENING_GRACE_MS);
-      setPlayerIsPlaying(false);
-
-      publishHostPlayerState("room-start", false);
-    } catch (error) {
-      showNotice(error.message || "Could not start room", "error");
-    } finally {
-      setActionLoading(false);
-    }
+    // Reuse the canonical opening-transition pipeline so PartyKit, peers, and reloads
+    // all observe the same room status/current opening/player snapshot.
+    sendOpeningAdvance(Number(room.current_opening_index || 0), false, false);
   }
 
   async function handleShuffleQueue() {
