@@ -1806,16 +1806,15 @@ export default function RoomPage() {
                   </div>
                 ) : null}
                 <div className="absolute inset-0 z-30 pointer-events-none">
-                  <div className="absolute right-3 bottom-3 flex items-end gap-2 opacity-0 translate-y-3 transition-all duration-200 ease-out group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:translate-y-0 pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto">
-                    {!isHost ? (
-                      <div className="max-w-[12rem] rounded-2xl border border-slate-700/80 bg-slate-950/90 backdrop-blur px-3 py-2 shadow-2xl shadow-black/30">
-                        <p className="text-xs font-black uppercase tracking-[0.12em] text-amber-300">
-                          Solo el host puede manejar la reproducción
-                        </p>
-                      </div>
-                    ) : null}
-
+                  <div className="absolute right-3 bottom-3 opacity-0 translate-y-3 transition-all duration-200 ease-out group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:translate-y-0 pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto">
                     <div className="relative">
+                      {!isHost ? (
+                        <div className="pointer-events-none absolute right-full top-1/2 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md border border-slate-700/80 bg-slate-950/90 px-1.5 py-1 shadow-2xl shadow-black/30">
+                          <p className="text-[9px] leading-none font-black uppercase tracking-[0.08em] text-amber-300">
+                            Host-only playback
+                          </p>
+                        </div>
+                      ) : null}
                       <button
                         type="button"
                         className="p-2.5 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-lg shadow-[0_14px_40px_rgba(0,0,0,0.38)] transition-all duration-200 ease-out hover:-translate-y-0.5 hover:bg-slate-800/80 hover:shadow-[0_18px_50px_rgba(0,0,0,0.48)] pointer-events-auto"
@@ -1897,7 +1896,7 @@ export default function RoomPage() {
                         commitRatingFromSlider(event.currentTarget.valueAsNumber);
                       }
                     }}
-                    className="w-full h-3 rounded-full bg-slate-700 accent-brand-400 cursor-pointer"
+                    className="mx-auto block h-3 w-[calc(90%+12px)] rounded-full bg-slate-700 accent-brand-400 cursor-pointer"
                     aria-label="Rate current opening from 1 to 10 in steps of 0.5"
                   />
                   <div className="mt-2 grid grid-cols-10 text-xs text-slate-500 font-semibold tabular-nums select-none">
