@@ -1961,6 +1961,20 @@ app.post("/api/rooms/rate", async (req, res) => {
   const normalizedScore = normalizeHalfStepScore(req.body?.score);
   const score = parseSchema(ScoreSchema, normalizedScore, res, "Invalid score");
   const eventId = randomUUID();
+  const scoreHalfSteps = Number.isFinite(Number(score)) ? Math.round(Number(score) * 2) : null;
+
+  logEvent("info", "room_rate_received", {
+    requestId: req.requestId,
+    roomId,
+    openingId,
+    userUuid: auth?.user?.id || null,
+    scoreRaw: req.body?.score,
+    score: Number.isFinite(Number(score)) ? Number(score) : null,
+    scoreHalfSteps,
+    submittedAt: null,
+    eventId,
+    timestamp: Date.now(),
+  });
 
   if (!roomId || !openingId || score == null) {
     return res.status(400).json({ error: "Invalid rating payload" });
@@ -2025,12 +2039,27 @@ app.post("/api/rooms/rate", async (req, res) => {
     }
     return internalError(req, res, error, "room_rate_upsert_failed");
   }
-  const scoreHalfSteps = Math.round(Number(data?.score || score) * 2);
+  const persistedScoreHalfSteps = Math.round(Number(data?.score || score) * 2);
   const version = new Date(data?.submitted_at || Date.now()).getTime();
+
+  logEvent("info", "room_rate_persisted", {
+    requestId: req.requestId,
+    roomId,
+    openingId,
+    userUuid: auth?.user?.id || null,
+    scoreRaw: req.body?.score,
+    score: Number(data?.score || score),
+    scoreHalfSteps: persistedScoreHalfSteps,
+    submittedAt: data?.submitted_at || null,
+    eventId,
+    version,
+    timestamp: Date.now(),
+  });
+
   res.json({
     rating: {
       ...data,
-      score_half_steps: scoreHalfSteps,
+      score_half_steps: persistedScoreHalfSteps,
       version,
       event_id: eventId,
     },

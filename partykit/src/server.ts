@@ -320,6 +320,20 @@ export default class AnimeRoomParty implements Party.Server {
     }
 
     if (envelope.type === "rating:submitted") {
+      console.info(JSON.stringify({
+        level: "info",
+        event: "rating_ws_received",
+        roomId: this.party.id,
+        openingId: envelope.payload?.openingId || null,
+        userUuid: senderMember.userUuid,
+        eventId: envelope.payload?.eventId || null,
+        version: envelope.payload?.version || null,
+        scoreRaw: envelope.payload?.score ?? null,
+        scoreHalfSteps: envelope.payload?.scoreHalfSteps ?? null,
+        source: "ws",
+        timestamp: Date.now(),
+      }));
+
       const parsed = RatingSubmittedSchema.safeParse(envelope.payload || {});
       if (!parsed.success) {
         console.warn(JSON.stringify({
@@ -341,6 +355,21 @@ export default class AnimeRoomParty implements Party.Server {
       const version = Number(parsed.data.version || Date.now());
       const eventId = String(parsed.data.eventId || randomUUID());
 
+      console.info(JSON.stringify({
+        level: "info",
+        event: "rating_ws_validated",
+        roomId: this.party.id,
+        openingId,
+        userUuid: senderMember.userUuid,
+        eventId,
+        version,
+        scoreRaw: parsed.data.score ?? null,
+        scoreHalfSteps: halfSteps,
+        scoreNumber: score,
+        source: "ws",
+        timestamp: Date.now(),
+      }));
+
       this.party.broadcast(
         JSON.stringify({
           type: "rating:submitted",
@@ -355,6 +384,20 @@ export default class AnimeRoomParty implements Party.Server {
           },
         }),
       );
+
+      console.info(JSON.stringify({
+        level: "info",
+        event: "rating_ws_broadcast",
+        roomId: this.party.id,
+        openingId,
+        userUuid: senderMember.userUuid,
+        eventId,
+        version,
+        scoreHalfSteps: halfSteps,
+        scoreNumber: score,
+        source: "ws",
+        timestamp: Date.now(),
+      }));
       return;
     }
 

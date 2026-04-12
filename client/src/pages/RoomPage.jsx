@@ -233,6 +233,8 @@ export default function RoomPage() {
   const desiredVideoRef = useRef(null);
   const confirmResolverRef = useRef(null);
   const nativeControlsRef = useRef(false);
+  const lastRateSubmitRef = useRef({ key: "", ts: 0 });
+  const inFlightRateKeysRef = useRef(new Set());
 
   // Guard against host replay loops: state changes caused by remote sync should not be re-broadcast.
   const remotePlayerMutationUntilRef = useRef(0);
@@ -1669,6 +1671,56 @@ export default function RoomPage() {
     const numericScore = Number(score);
     if (!currentOpening || !identity || room?.status !== "playing" || !isValidRatingValue(numericScore)) return;
 
+    const openingId = String(currentOpening.id || "").trim();
+    const scoreHalfSteps = toScoreHalfSteps(numericScore);
+    const submitKey = `${openingId}:${scoreHalfSteps}`;
+    const now = Date.now();
+
+    if (inFlightRateKeysRef.current.has(submitKey)) {
+      console.info("[rating_submit_blocked]", {
+        roomId,
+        openingId,
+        userUuid: identity.userId,
+        scoreRaw: score,
+        scoreNumber: numericScore,
+        scoreHalfSteps,
+        reason: "inflight_same_key",
+        source: "optimistic",
+        timestamp: now,
+      });
+      return;
+    }
+
+    if (lastRateSubmitRef.current.key === submitKey && now - Number(lastRateSubmitRef.current.ts || 0) < 350) {
+      console.info("[rating_submit_blocked]", {
+        roomId,
+        openingId,
+        userUuid: identity.userId,
+        scoreRaw: score,
+        scoreNumber: numericScore,
+        scoreHalfSteps,
+        reason: "dedupe_window_350ms",
+        source: "optimistic",
+        timestamp: now,
+      });
+      return;
+    }
+
+    lastRateSubmitRef.current = { key: submitKey, ts: now };
+    inFlightRateKeysRef.current.add(submitKey);
+
+    console.info("[rating_submit_start]", {
+      roomId,
+      openingId,
+      userUuid: identity.userId,
+      scoreRaw: score,
+      scoreNumber: numericScore,
+      scoreHalfSteps,
+      source: "optimistic",
+      currentOpeningId: String(currentOpeningRef.current?.id || "") || null,
+      timestamp: now,
+    });
+
     const previous = myRating;
     setMyRating(numericScore);
 
@@ -1677,6 +1729,19 @@ export default function RoomPage() {
         roomId,
         openingId: currentOpening.id,
         score: numericScore,
+      });
+
+      console.info("[rating_submit_200]", {
+        roomId,
+        openingId,
+        userUuid: identity.userId,
+        scoreRaw: score,
+        scoreNumber: numericScore,
+        scoreHalfSteps,
+        eventId: String(response?.rating?.event_id || "") || null,
+        version: Number(response?.rating?.version || 0) || null,
+        source: "api",
+        timestamp: Date.now(),
       });
 
       const persistedRawScore = Number(response?.rating?.score);
@@ -1719,6 +1784,19 @@ export default function RoomPage() {
         };
       });
       fetchRoomUserAverages();
+      console.info("[rating_ws_emit]", {
+        roomId,
+        openingId,
+        userUuid: identity.userId,
+        scoreRaw: persistedScore,
+        scoreNumber: persistedScore,
+        scoreHalfSteps: Number(response?.rating?.score_half_steps || toScoreHalfSteps(persistedScore)),
+        eventId: String(response?.rating?.event_id || "") || null,
+        version: Number(response?.rating?.version || 0) || null,
+        source: "ws",
+        currentOpeningId: String(currentOpeningRef.current?.id || "") || null,
+        timestamp: Date.now(),
+      });
       sendPartyEvent("rating:submitted", {
         openingId: currentOpening.id,
         scoreHalfSteps: Number(response?.rating?.score_half_steps || toScoreHalfSteps(persistedScore)),
@@ -1730,6 +1808,8 @@ export default function RoomPage() {
       setMyRating(previous);
       showNotice(error.message || "Could not submit rating", "error");
       await fetchCurrentOpeningVotes();
+    } finally {
+      inFlightRateKeysRef.current.delete(submitKey);
     }
   }
 
