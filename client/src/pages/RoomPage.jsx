@@ -829,6 +829,13 @@ export default function RoomPage() {
               if (ytState === PLAYING) setPlayerIsPlaying(true);
               if (ytState === PAUSED || ytState === ENDED) setPlayerIsPlaying(false);
 
+              if (!isHostRef.current && ytState === PLAYING && !expectedRemotePlaybackRef.current) {
+                remotePlayerMutationUntilRef.current = Date.now() + 500;
+                playerRef.current?.pauseVideo?.();
+                setPlayerIsPlaying(false);
+                return;
+              }
+
               if (!isHostRef.current && Date.now() >= remotePlayerMutationUntilRef.current) {
                 const shouldPlay = expectedRemotePlaybackRef.current;
 
@@ -1770,6 +1777,15 @@ export default function RoomPage() {
             ) : (
               <>
                 <div ref={playerContainerRef} className="w-full h-full" />
+                {!isHost && room?.status === "playing" && currentOpening?.youtube_video_id ? (
+                  <div
+                    className="absolute inset-0 z-20"
+                    aria-hidden="true"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={(event) => event.preventDefault()}
+                    onTouchStart={(event) => event.preventDefault()}
+                  />
+                ) : null}
                 {!currentOpening?.youtube_video_id ? (
                   <div className="absolute inset-0 z-10 flex flex-col items-center justify-center text-center p-8 bg-black/75">
                     <Play className="w-16 h-16 text-slate-600 mb-4" />
