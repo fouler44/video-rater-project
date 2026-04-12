@@ -1960,6 +1960,7 @@ app.post("/api/rooms/rate", async (req, res) => {
   const openingId = parseSchema(z.string().uuid(), String(req.body?.openingId || "").trim(), res, "Invalid openingId");
   const normalizedScore = normalizeHalfStepScore(req.body?.score);
   const score = parseSchema(ScoreSchema, normalizedScore, res, "Invalid score");
+  const eventId = randomUUID();
 
   if (!roomId || !openingId || score == null) {
     return res.status(400).json({ error: "Invalid rating payload" });
@@ -2012,8 +2013,9 @@ app.post("/api/rooms/rate", async (req, res) => {
       user_uuid: auth.user.id,
       user_id: auth.user.id,
       score,
+      submitted_at: new Date().toISOString(),
     }, { onConflict: "room_id,list_opening_id,user_uuid" })
-    .select("id,room_id,list_opening_id,user_uuid,user_id,score")
+    .select("id,room_id,list_opening_id,user_uuid,user_id,score,submitted_at")
     .single();
 
   if (error) {
@@ -2023,7 +2025,16 @@ app.post("/api/rooms/rate", async (req, res) => {
     }
     return internalError(req, res, error, "room_rate_upsert_failed");
   }
-  res.json({ rating: data });
+  const scoreHalfSteps = Math.round(Number(data?.score || score) * 2);
+  const version = new Date(data?.submitted_at || Date.now()).getTime();
+  res.json({
+    rating: {
+      ...data,
+      score_half_steps: scoreHalfSteps,
+      version,
+      event_id: eventId,
+    },
+  });
 });
 
 app.post("/api/rooms/:roomId/advance", async (req, res) => {

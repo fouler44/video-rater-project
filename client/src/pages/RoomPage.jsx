@@ -50,6 +50,19 @@ function isInRatingRange(value) {
   return Number.isFinite(numeric) && numeric >= 1 && numeric <= 10;
 }
 
+function toScoreHalfSteps(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const clamped = Math.max(1, Math.min(10, numeric));
+  return Math.round(clamped * 2);
+}
+
+function fromScoreHalfSteps(halfSteps) {
+  const numeric = Number(halfSteps);
+  if (!Number.isFinite(numeric)) return null;
+  return Number((numeric / 2).toFixed(1));
+}
+
 function formatRatingValue(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "-";
@@ -174,7 +187,7 @@ export default function RoomPage() {
 
   const [myRating, setMyRating] = useState(0);
   const [sliderRating, setSliderRating] = useState(5);
-  const [currentOpeningVotes, setCurrentOpeningVotes] = useState([]);
+  const [votesByOpeningId, setVotesByOpeningId] = useState({});
   const [roomUserStats, setRoomUserStats] = useState({});
   const [hostUuid, setHostUuid] = useState("");
 
@@ -274,6 +287,17 @@ export default function RoomPage() {
     if (!room || !openings.length) return null;
     return openings.find((item) => item.order_index === room.current_opening_index) || null;
   }, [room, openings]);
+
+  const currentOpeningVotes = useMemo(() => {
+    const openingId = String(currentOpening?.id || "").trim();
+    if (!openingId) return [];
+
+    const scopedVotes = votesByOpeningId[openingId] || {};
+    return Object.values(scopedVotes).map((entry) => ({
+      user_uuid: entry.user_uuid,
+      score: Number(entry.score),
+    }));
+  }, [currentOpening?.id, votesByOpeningId]);
 
   useEffect(() => {
     currentOpeningRef.current = currentOpening;
@@ -554,8 +578,9 @@ export default function RoomPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "ratings", filter: `room_id=eq.${roomId}` },
-        () => {
-          fetchCurrentOpeningVotes();
+        (payload) => {
+          const openingId = String(payload?.new?.list_opening_id || payload?.old?.list_opening_id || "").trim();
+          fetchCurrentOpeningVotes(openingId || undefined);
           fetchRoomUserAverages();
         },
       )
@@ -1164,36 +1189,132 @@ export default function RoomPage() {
     }
 
     if (type === "rating:submitted") {
-      if (!currentOpeningRef.current?.id) return;
-
-      const currentOpeningId = String(currentOpeningRef.current.id || "");
       const payloadOpeningId = String(payload.openingId || "");
 
-      // If event belongs to another opening, ignore optimistic patch but still keep normal
-      // DB subscriptions to converge state.
-      if (payloadOpeningId && payloadOpeningId !== currentOpeningId) {
+      console.info("[rating_ws_received]", {
+        roomId,
+        openingId: payloadOpeningId,
+        currentOpeningId: String(currentOpeningRef.current?.id || "") || null,
+        userUuid: String(payload.userUuid || "") || null,
+        eventId: String(payload.eventId || "") || null,
+        version: Number(payload.version || 0) || null,
+        scoreRaw: payload.score,
+        scoreHalfSteps: payload.scoreHalfSteps,
+        source: "ws",
+        timestamp: Date.now(),
+      });
+
+      if (!payloadOpeningId) {
+        console.info("[rating_ws_discarded]", {
+          roomId,
+          reason: "missing_opening_id",
+          source: "ws",
+          timestamp: Date.now(),
+        });
         return;
       }
 
       const userUuid = String(payload.userUuid || "").trim();
       if (!userUuid) {
-        fetchCurrentOpeningVotes();
+        console.info("[rating_ws_discarded]", {
+          roomId,
+          openingId: payloadOpeningId,
+          reason: "missing_user_uuid",
+          source: "ws",
+          timestamp: Date.now(),
+        });
+        fetchCurrentOpeningVotes(payloadOpeningId);
         return;
       }
 
-      const rawScore = Number(payload.score);
-      const normalizedScore = normalizeRatingValue(rawScore, rawScore);
+      const payloadHalfSteps = Number(payload.scoreHalfSteps);
+      const scoreHalfSteps = Number.isInteger(payloadHalfSteps)
+        ? payloadHalfSteps
+        : toScoreHalfSteps(payload.score);
 
-      if (isInRatingRange(normalizedScore)) {
-        setCurrentOpeningVotes((prev) => {
-          const previousVote = prev.find((item) => item.user_uuid === userUuid);
-          patchUserAverageFromRating(userUuid, normalizedScore, previousVote?.score ?? null);
-          return upsertVote(prev, { user_uuid: userUuid, score: normalizedScore });
+      const normalizedScore = fromScoreHalfSteps(scoreHalfSteps);
+      const version = Number(payload.version || Date.now());
+      const eventId = String(payload.eventId || "").trim() || null;
+
+      if (!Number.isInteger(scoreHalfSteps) || !isInRatingRange(normalizedScore)) {
+        console.info("[rating_ws_discarded]", {
+          roomId,
+          openingId: payloadOpeningId,
+          userUuid,
+          scoreRaw: payload.score,
+          scoreHalfSteps,
+          reason: "invalid_score",
+          source: "ws",
+          timestamp: Date.now(),
         });
+        fetchCurrentOpeningVotes(payloadOpeningId);
+        return;
       }
 
-      // Reconcile with DB so the UI converges even if websocket payload precision differs.
-      fetchCurrentOpeningVotes();
+      setVotesByOpeningId((prev) => {
+        const scopedVotes = prev[payloadOpeningId] || {};
+        const beforeEntry = scopedVotes[userUuid] || null;
+        const beforeVersion = Number(beforeEntry?.version || 0);
+        const beforeScore = Number(beforeEntry?.score ?? NaN);
+
+        if (beforeVersion > version) {
+          console.info("[rating_ws_discarded]", {
+            roomId,
+            openingId: payloadOpeningId,
+            userUuid,
+            eventId,
+            version,
+            beforeVersion,
+            beforeScore,
+            afterScore: normalizedScore,
+            reason: "stale_version",
+            source: "ws",
+            timestamp: Date.now(),
+          });
+          return prev;
+        }
+
+        const next = {
+          ...prev,
+          [payloadOpeningId]: {
+            ...scopedVotes,
+            [userUuid]: {
+              user_uuid: userUuid,
+              score: normalizedScore,
+              scoreHalfSteps,
+              version,
+              eventId,
+              source: "ws",
+            },
+          },
+        };
+
+        console.info("[rating_ws_applied]", {
+          roomId,
+          openingId: payloadOpeningId,
+          currentOpeningId: String(currentOpeningRef.current?.id || "") || null,
+          userUuid,
+          eventId,
+          version,
+          scoreRaw: payload.score,
+          scoreHalfSteps,
+          beforeScore: Number.isFinite(beforeScore) ? beforeScore : null,
+          afterScore: normalizedScore,
+          source: "ws",
+          timestamp: Date.now(),
+        });
+
+        return next;
+      });
+
+      console.info("[rating_refetch_triggered]", {
+        roomId,
+        openingId: payloadOpeningId,
+        reason: "post_ws_reconcile",
+        source: "fetch",
+        timestamp: Date.now(),
+      });
+      fetchCurrentOpeningVotes(payloadOpeningId);
       return;
     }
 
@@ -1431,20 +1552,51 @@ export default function RoomPage() {
     setParticipants([]);
   }
 
-  async function fetchCurrentOpeningVotes() {
-    if (!currentOpeningRef.current?.id) {
-      setCurrentOpeningVotes([]);
+  async function fetchCurrentOpeningVotes(openingIdOverride = null) {
+    const openingId = String(openingIdOverride || currentOpeningRef.current?.id || "").trim();
+    if (!openingId) {
       return;
     }
 
     const { data, error } = await supabase
       .from("ratings")
-      .select("user_uuid,score")
+      .select("user_uuid,score,submitted_at")
       .eq("room_id", roomId)
-      .eq("list_opening_id", currentOpeningRef.current.id);
+      .eq("list_opening_id", openingId);
 
     if (!error) {
-      setCurrentOpeningVotes(data || []);
+      setVotesByOpeningId((prev) => {
+        const scopedVotes = {};
+
+        for (const row of data || []) {
+          const userUuid = String(row?.user_uuid || "").trim();
+          const scoreHalfSteps = toScoreHalfSteps(row?.score);
+          const score = fromScoreHalfSteps(scoreHalfSteps);
+          if (!userUuid || !Number.isInteger(scoreHalfSteps) || !isInRatingRange(score)) continue;
+
+          scopedVotes[userUuid] = {
+            user_uuid: userUuid,
+            score,
+            scoreHalfSteps,
+            version: Number(new Date(row?.submitted_at || 0).getTime() || 0),
+            eventId: null,
+            source: "db",
+          };
+        }
+
+        console.info("[rating_refetch_applied]", {
+          roomId,
+          openingId,
+          source: "db",
+          count: Object.keys(scopedVotes).length,
+          timestamp: Date.now(),
+        });
+
+        return {
+          ...prev,
+          [openingId]: scopedVotes,
+        };
+      });
     }
   }
 
@@ -1540,15 +1692,39 @@ export default function RoomPage() {
         );
       }
 
-      setCurrentOpeningVotes((prev) => {
-        const previousVote = prev.find((item) => item.user_uuid === identity.userId);
+      const scoreHalfSteps = Number(response?.rating?.score_half_steps || toScoreHalfSteps(persistedScore));
+      const version = Number(response?.rating?.version || Date.now());
+      const eventId = String(response?.rating?.event_id || "").trim() || null;
+
+      setVotesByOpeningId((prev) => {
+        const openingId = String(currentOpening.id || "").trim();
+        const scopedVotes = prev[openingId] || {};
+        const previousVote = scopedVotes[identity.userId] || null;
+
         patchUserAverageFromRating(identity.userId, persistedScore, previousVote?.score ?? null);
-        return upsertVote(prev, { user_uuid: identity.userId, score: persistedScore });
+
+        return {
+          ...prev,
+          [openingId]: {
+            ...scopedVotes,
+            [identity.userId]: {
+              user_uuid: identity.userId,
+              score: persistedScore,
+              scoreHalfSteps,
+              version,
+              eventId,
+              source: "api",
+            },
+          },
+        };
       });
       fetchRoomUserAverages();
       sendPartyEvent("rating:submitted", {
         openingId: currentOpening.id,
+        scoreHalfSteps: Number(response?.rating?.score_half_steps || toScoreHalfSteps(persistedScore)),
         score: persistedScore,
+        version: Number(response?.rating?.version || Date.now()),
+        eventId: String(response?.rating?.event_id || "").trim() || undefined,
       });
     } catch (error) {
       setMyRating(previous);

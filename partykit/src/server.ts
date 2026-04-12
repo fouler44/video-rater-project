@@ -105,10 +105,14 @@ const QueueShuffleSchema = z.object({});
 
 const RatingSubmittedSchema = z.object({
   openingId: z.string().uuid(),
+  scoreHalfSteps: z.coerce.number().int().min(2).max(20).optional(),
   score: z.coerce
     .number()
     .min(1)
-    .max(10),
+    .max(10)
+    .optional(),
+  version: z.coerce.number().optional(),
+  eventId: z.string().optional(),
 });
 
 function normalizeHalfStepScore(value: number) {
@@ -329,15 +333,23 @@ export default class AnimeRoomParty implements Party.Server {
         return;
       }
 
-      const score = normalizeHalfStepScore(parsed.data.score);
+      const halfSteps = Number.isInteger(Number(parsed.data.scoreHalfSteps))
+        ? Number(parsed.data.scoreHalfSteps)
+        : Math.round(Number(parsed.data.score) * 2);
+      const score = normalizeHalfStepScore(halfSteps / 2);
       const openingId = parsed.data.openingId;
+      const version = Number(parsed.data.version || Date.now());
+      const eventId = String(parsed.data.eventId || randomUUID());
 
       this.party.broadcast(
         JSON.stringify({
           type: "rating:submitted",
           payload: {
             openingId,
+            scoreHalfSteps: halfSteps,
             score,
+            version,
+            eventId,
             userUuid: senderMember.userUuid,
             submittedAt: Date.now(),
           },
