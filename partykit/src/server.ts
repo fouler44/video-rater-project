@@ -105,7 +105,7 @@ const QueueShuffleSchema = z.object({});
 
 const RatingSubmittedSchema = z.object({
   openingId: z.string().uuid(),
-  score: z.number().int().min(1).max(10),
+  score: z.number().min(1).max(10).multipleOf(0.5),
 });
 
 function clampNumber(value: number, min: number, max: number) {

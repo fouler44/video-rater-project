@@ -36,10 +36,26 @@ function isValidRatingValue(value) {
   return Math.abs(numeric * 2 - Math.round(numeric * 2)) < 1e-9;
 }
 
+function normalizeRatingValue(value, fallback = 5) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+
+  const clamped = Math.max(1, Math.min(10, numeric));
+  const halfStep = Math.round(clamped * 2) / 2;
+  return Number(halfStep.toFixed(1));
+}
+
 function formatRatingValue(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "-";
   return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1);
+}
+
+function formatAverageRatingValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "-";
+  if (Number.isInteger(numeric)) return String(numeric);
+  return numeric.toFixed(2).replace(/(\.\d)0$/, "$1");
 }
 
 function ensureYoutubeIframeApi() {
@@ -562,7 +578,7 @@ export default function RoomPage() {
   }, [roomId, currentOpening?.id, identity?.userId]);
 
   useEffect(() => {
-    setSliderRating(myRating > 0 ? Number(myRating) : 5);
+    setSliderRating(myRating > 0 ? normalizeRatingValue(myRating, 5) : 5);
   }, [myRating, currentOpening?.id]);
 
   useEffect(() => {
@@ -1377,6 +1393,7 @@ export default function RoomPage() {
       });
 
       setCurrentOpeningVotes((prev) => upsertVote(prev, { user_uuid: identity.userId, score: numericScore }));
+      await fetchRoomUserAverages();
       sendPartyEvent("rating:submitted", {
         openingId: currentOpening.id,
         score: numericScore,
@@ -1389,13 +1406,13 @@ export default function RoomPage() {
   }
 
   function handleRatingSliderChange(nextValue) {
-    const numeric = Number(nextValue);
+    const numeric = normalizeRatingValue(nextValue, sliderRating);
     if (!isValidRatingValue(numeric)) return;
     setSliderRating(numeric);
   }
 
   function commitRatingFromSlider(nextValue = sliderRating) {
-    const numeric = Number(nextValue);
+    const numeric = normalizeRatingValue(nextValue, sliderRating);
     if (!isValidRatingValue(numeric)) return;
     if (numeric === Number(myRating || 0)) return;
     handleRate(numeric);
@@ -1802,13 +1819,13 @@ export default function RoomPage() {
                     max={10}
                     step={0.5}
                     value={sliderRating}
-                    onChange={(event) => handleRatingSliderChange(event.target.value)}
-                    onMouseUp={(event) => commitRatingFromSlider(event.currentTarget.value)}
-                    onTouchEnd={(event) => commitRatingFromSlider(event.currentTarget.value)}
-                    onBlur={(event) => commitRatingFromSlider(event.currentTarget.value)}
+                    onChange={(event) => handleRatingSliderChange(event.currentTarget.valueAsNumber)}
+                    onMouseUp={(event) => commitRatingFromSlider(event.currentTarget.valueAsNumber)}
+                    onTouchEnd={(event) => commitRatingFromSlider(event.currentTarget.valueAsNumber)}
+                    onBlur={(event) => commitRatingFromSlider(event.currentTarget.valueAsNumber)}
                     onKeyUp={(event) => {
                       if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") {
-                        commitRatingFromSlider(event.currentTarget.value);
+                        commitRatingFromSlider(event.currentTarget.valueAsNumber);
                       }
                     }}
                     className="w-full h-3 rounded-full bg-slate-700 accent-brand-400 cursor-pointer"
@@ -1944,7 +1961,7 @@ export default function RoomPage() {
                       </div>
 
                       <div className="pointer-events-none absolute right-3 -top-2 z-20 translate-y-1 rounded-lg border border-slate-700/80 bg-slate-950/95 px-2.5 py-1.5 text-[11px] font-semibold text-slate-200 opacity-0 shadow-xl transition-all duration-150 group-hover:-translate-y-1 group-hover:opacity-100">
-                        Avg: {hasAverageScore ? formatRatingValue(averageScore) : "No ratings yet"}
+                        Avg: {hasAverageScore ? formatAverageRatingValue(averageScore) : "No ratings yet"}
                       </div>
                     </div>
                   );

@@ -170,6 +170,44 @@ function internalError(req, res, error, event = "internal_error") {
   return res.status(500).json({ error: "Internal server error" });
 }
 
+function mapRatingSchemaError(error) {
+  const code = String(error?.code || "").trim();
+  const message = String(error?.message || "");
+  const lower = message.toLowerCase();
+
+  const scoreConstraintViolation =
+    code === "23514"
+    || lower.includes("ratings_score_check")
+    || (lower.includes("score") && lower.includes("check constraint"));
+
+  const scoreTypeMismatch =
+    code === "22P02"
+    || code === "42804"
+    || lower.includes("invalid input syntax")
+    || lower.includes("cannot cast")
+    || (lower.includes("score") && lower.includes("integer"));
+
+  if (scoreConstraintViolation || scoreTypeMismatch) {
+    return {
+      status: 400,
+      error: "Database schema does not allow half-step ratings yet. Apply migration 20260410_allow_half_step_ratings.sql.",
+    };
+  }
+
+  const missingMembershipColumns =
+    code === "42703"
+    && (lower.includes("room_members") || lower.includes("user_id") || lower.includes("avatar_url"));
+
+  if (missingMembershipColumns) {
+    return {
+      status: 400,
+      error: "Database schema is outdated for room membership fields. Apply pending Supabase migrations.",
+    };
+  }
+
+  return null;
+}
+
 function sleep(ms = 0) {
   const safeMs = Math.max(0, Number(ms) || 0);
   if (safeMs === 0) return Promise.resolve();
@@ -1719,7 +1757,7 @@ app.post("/api/rooms/rate", async (req, res) => {
   const openingId = parseSchema(z.string().uuid(), String(req.body?.openingId || "").trim(), res, "Invalid openingId");
   const score = parseSchema(ScoreSchema, Number(req.body?.score), res, "Invalid score");
 
-  if (!roomId || !openingId || !score) {
+  if (!roomId || !openingId || score == null) {
     return res.status(400).json({ error: "Invalid rating payload" });
   }
 
@@ -1752,7 +1790,15 @@ app.post("/api/rooms/rate", async (req, res) => {
     return res.status(409).json({ error: "Ratings for this opening are locked" });
   }
 
-  await upsertRoomMembership(roomId, auth.user);
+  try {
+    await upsertRoomMembership(roomId, auth.user);
+  } catch (error) {
+    const mapped = mapRatingSchemaError(error);
+    if (mapped) {
+      return res.status(mapped.status).json({ error: mapped.error });
+    }
+    return internalError(req, res, error, "room_rate_membership_upsert_failed");
+  }
 
   const { data, error } = await supabaseAdmin
     .from("ratings")
@@ -1766,7 +1812,13 @@ app.post("/api/rooms/rate", async (req, res) => {
     .select("id,room_id,list_opening_id,user_uuid,user_id,score")
     .single();
 
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) {
+    const mapped = mapRatingSchemaError(error);
+    if (mapped) {
+      return res.status(mapped.status).json({ error: mapped.error });
+    }
+    return internalError(req, res, error, "room_rate_upsert_failed");
+  }
   res.json({ rating: data });
 });
 
