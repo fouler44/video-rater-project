@@ -26,8 +26,29 @@ const OPENING_GRACE_MS = 2500;
 const DRIFT_THRESHOLD_SECONDS = 3;
 const HOST_SYNC_INTERVAL_MS = 12000;
 const PARTY_HEARTBEAT_MS = 20000;
+const REMOTE_PLAYBACK_CONSENT_STORAGE_KEY = "room-remote-playback-consent";
 
 let youtubeIframePromise = null;
+
+function readRemotePlaybackConsent() {
+  try {
+    return localStorage.getItem(REMOTE_PLAYBACK_CONSENT_STORAGE_KEY) === "granted";
+  } catch {
+    return false;
+  }
+}
+
+function persistRemotePlaybackConsent(granted) {
+  try {
+    if (granted) {
+      localStorage.setItem(REMOTE_PLAYBACK_CONSENT_STORAGE_KEY, "granted");
+      return;
+    }
+    localStorage.removeItem(REMOTE_PLAYBACK_CONSENT_STORAGE_KEY);
+  } catch {
+    // Ignore storage access issues; autoplay recovery still works for the current page.
+  }
+}
 
 function isValidRatingValue(value) {
   const numeric = Number(value);
@@ -285,6 +306,8 @@ export default function RoomPage() {
   const [playerMuted, setPlayerMuted] = useState(false);
   const [volumePanelOpen, setVolumePanelOpen] = useState(false);
   const [playerError, setPlayerError] = useState("");
+  const [remotePlaybackNeedsGesture, setRemotePlaybackNeedsGesture] = useState(false);
+  const [remotePlaybackConsent, setRemotePlaybackConsent] = useState(() => readRemotePlaybackConsent());
   const [uiNotice, setUiNotice] = useState(null);
   const [participantsExpanded, setParticipantsExpanded] = useState(false);
   const [queueExpanded, setQueueExpanded] = useState(false);
@@ -315,6 +338,8 @@ export default function RoomPage() {
   const playerContainerRef = useRef(null);
   const currentVideoIdRef = useRef("");
   const desiredVideoRef = useRef(null);
+  const remotePlaybackNeedsGestureRef = useRef(false);
+  const remotePlaybackConsentRef = useRef(remotePlaybackConsent);
   const confirmResolverRef = useRef(null);
   const nativeControlsRef = useRef(false);
   const lastRateSubmitRef = useRef({ key: "", ts: 0 });
@@ -411,6 +436,10 @@ export default function RoomPage() {
     playerReadyRef.current = playerReady;
   }, [playerReady]);
 
+  useEffect(() => {
+    remotePlaybackConsentRef.current = remotePlaybackConsent;
+  }, [remotePlaybackConsent]);
+
   function isPlayerApiReady(player) {
     return Boolean(player && typeof player.getPlayerState === "function");
   }
@@ -478,6 +507,37 @@ export default function RoomPage() {
       trackDesired: false,
     });
   }
+
+  function setRemotePlaybackGestureRequirement(required) {
+    remotePlaybackNeedsGestureRef.current = Boolean(required);
+    setRemotePlaybackNeedsGesture(Boolean(required));
+  }
+
+  useEffect(() => {
+    if (!remotePlaybackNeedsGesture) return undefined;
+    if (!remotePlaybackConsentRef.current) return undefined;
+    if (isHost) return undefined;
+    if (room?.status !== "playing") return undefined;
+
+    let resumed = false;
+
+    const resumeFromGesture = () => {
+      if (resumed) return;
+      resumed = true;
+      handleResumeRemotePlayback({ persistConsent: false });
+    };
+
+    const gestureOptions = { passive: true };
+    window.addEventListener("pointerdown", resumeFromGesture, gestureOptions);
+    window.addEventListener("touchstart", resumeFromGesture, gestureOptions);
+    window.addEventListener("keydown", resumeFromGesture);
+
+    return () => {
+      window.removeEventListener("pointerdown", resumeFromGesture, gestureOptions);
+      window.removeEventListener("touchstart", resumeFromGesture, gestureOptions);
+      window.removeEventListener("keydown", resumeFromGesture);
+    };
+  }, [remotePlaybackNeedsGesture, remotePlaybackConsent, isHost, room?.status]);
 
   useEffect(() => {
     const player = playerRef.current;
@@ -1049,8 +1109,13 @@ export default function RoomPage() {
                 setPlayerReady(true);
               }
 
-              if (ytState === PLAYING) setPlayerIsPlaying(true);
-              if (ytState === PAUSED || ytState === ENDED) setPlayerIsPlaying(false);
+              if (ytState === PLAYING) {
+                setPlayerIsPlaying(true);
+                setRemotePlaybackGestureRequirement(false);
+              }
+              if (ytState === PAUSED || ytState === ENDED) {
+                setPlayerIsPlaying(false);
+              }
 
               if (!isHostRef.current && ytState === PLAYING && !expectedRemotePlaybackRef.current) {
                 remotePlayerMutationUntilRef.current = Date.now() + 500;
@@ -1062,7 +1127,7 @@ export default function RoomPage() {
               if (!isHostRef.current && Date.now() >= remotePlayerMutationUntilRef.current) {
                 const shouldPlay = expectedRemotePlaybackRef.current;
 
-                if (shouldPlay && (ytState === PAUSED || ytState === ENDED)) {
+                if (shouldPlay && (ytState === PAUSED || ytState === ENDED) && !remotePlaybackNeedsGestureRef.current) {
                   remotePlayerMutationUntilRef.current = Date.now() + 450;
                   playerRef.current?.playVideo?.();
                 }
@@ -1141,6 +1206,7 @@ export default function RoomPage() {
 
     if (room?.status !== "playing") {
       desiredVideoRef.current = null;
+      setRemotePlaybackGestureRequirement(false);
       player?.pauseVideo?.();
       setPlayerIsPlaying(false);
       return;
@@ -1149,6 +1215,7 @@ export default function RoomPage() {
     const nextVideoId = String(currentOpening?.youtube_video_id || "").trim();
     if (!nextVideoId) {
       desiredVideoRef.current = null;
+      setRemotePlaybackGestureRequirement(false);
       player?.pauseVideo?.();
       setPlayerIsPlaying(false);
       return;
@@ -1548,6 +1615,7 @@ export default function RoomPage() {
       setMyRating(0);
       setGraceUntilTs(Date.now() + Math.max(2000, Math.min(3500, graceMs)));
       setPlayerIsPlaying(false);
+      setRemotePlaybackGestureRequirement(false);
 
       const nextVideoId = String(payload.videoId || "").trim();
       if (nextVideoId) {
@@ -1584,6 +1652,8 @@ export default function RoomPage() {
     const snapshotVideoId = String(snapshot?.videoId || "").trim();
     const expectedVideoId = String(currentOpeningRef.current?.youtube_video_id || "").trim();
     const targetTimestamp = Math.max(0, Number(snapshot?.timestamp || 0));
+    const loadedVideoId = String(currentVideoIdRef.current || "").trim();
+    const shouldLoadSnapshotVideo = Boolean(snapshotVideoId && snapshotVideoId !== loadedVideoId);
 
     if (!isPlayerApiReady(player) || !playerReadyRef.current) {
       if (snapshotVideoId) {
@@ -1592,6 +1662,15 @@ export default function RoomPage() {
         expectedRemotePlaybackRef.current = shouldPlay;
         safeLoadVideoById(snapshotVideoId, targetTimestamp, { autoplay: shouldPlay });
       }
+      return;
+    }
+
+    if (shouldLoadSnapshotVideo && snapshotVideoId === expectedVideoId) {
+      const shouldPlay = Boolean(snapshot?.isPlaying);
+      setPlayerError("");
+      expectedRemotePlaybackRef.current = shouldPlay;
+      remotePlayerMutationUntilRef.current = Date.now() + 600;
+      safeLoadVideoById(snapshotVideoId, targetTimestamp, { autoplay: shouldPlay });
       return;
     }
 
@@ -1627,8 +1706,13 @@ export default function RoomPage() {
     }
 
     if (!shouldPlay && currentState === PLAYING) {
+      setRemotePlaybackGestureRequirement(false);
       remotePlayerMutationUntilRef.current = Date.now() + 500;
       player.pauseVideo?.();
+    }
+
+    if (!shouldPlay) {
+      setRemotePlaybackGestureRequirement(false);
     }
 
     setPlayerIsPlaying(shouldPlay);
@@ -1644,19 +1728,10 @@ export default function RoomPage() {
     window.setTimeout(() => {
       const nowState = Number(player.getPlayerState?.());
       if (nowState === PLAYING) return;
+      if (!expectedRemotePlaybackRef.current) return;
 
-      // Browser autoplay policies can block remote unmuted playback for non-host clients.
-      player.mute?.();
-      setPlayerMuted(true);
-      remotePlayerMutationUntilRef.current = Date.now() + 500;
-      player.playVideo?.();
-
-      const safeTs = Math.max(0, Number(targetTimestamp || 0));
-      if (safeTs > 0) {
-        player.seekTo?.(safeTs, true);
-      }
-
-      showNotice("Autoplay blocked: resumed muted.", "warning");
+      setRemotePlaybackGestureRequirement(true);
+      showNotice("Autoplay with sound was blocked. Press Resume playback.", "warning");
     }, 320);
   }
 
@@ -1714,6 +1789,44 @@ export default function RoomPage() {
 
   function toggleVolumePanel() {
     setVolumePanelOpen((prev) => !prev);
+  }
+
+  function handleResumeRemotePlayback({ persistConsent: shouldPersistConsent = true } = {}) {
+    const player = playerRef.current;
+    if (!isPlayerApiReady(player) || !playerReadyRef.current) return;
+
+    if (shouldPersistConsent) {
+      persistRemotePlaybackConsent(true);
+      setRemotePlaybackConsent(true);
+    }
+
+    const snapshot = lastIncomingPlayerStateRef.current;
+    const snapshotVideoId = String(snapshot?.videoId || currentOpeningRef.current?.youtube_video_id || "").trim();
+    const targetTimestamp = Math.max(0, Number(snapshot?.timestamp || 0));
+    const shouldPlay = Boolean(snapshot?.isPlaying ?? expectedRemotePlaybackRef.current);
+
+    expectedRemotePlaybackRef.current = shouldPlay;
+    setRemotePlaybackGestureRequirement(false);
+    setPlayerError("");
+
+    if (snapshotVideoId && snapshotVideoId !== currentVideoIdRef.current) {
+      remotePlayerMutationUntilRef.current = Date.now() + 500;
+      safeLoadVideoById(snapshotVideoId, targetTimestamp, { autoplay: shouldPlay });
+      return;
+    }
+
+    if (targetTimestamp > 0) {
+      remotePlayerMutationUntilRef.current = Date.now() + 500;
+      player.seekTo?.(targetTimestamp, true);
+    }
+
+    remotePlayerMutationUntilRef.current = Date.now() + 500;
+    if (shouldPlay) {
+      player.playVideo?.();
+      return;
+    }
+
+    player.pauseVideo?.();
   }
 
   async function fetchParticipants() {
@@ -2415,6 +2528,25 @@ export default function RoomPage() {
                 {playerError ? (
                   <div className="absolute bottom-3 left-3 right-3 text-xs px-3 py-2 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-100">
                     {playerError}
+                  </div>
+                ) : null}
+                {remotePlaybackNeedsGesture && !isHost && room?.status === "playing" && currentOpening?.youtube_video_id ? (
+                  <div className="absolute inset-x-4 top-4 z-30 flex justify-center pointer-events-none">
+                    <div className="pointer-events-auto max-w-sm rounded-2xl border border-amber-400/35 bg-slate-950/92 px-4 py-3 text-center shadow-2xl shadow-black/40 backdrop-blur">
+                      <p className="text-[11px] font-black uppercase tracking-[0.12em] text-amber-300">
+                        Browser blocked autoplay
+                      </p>
+                      <p className="mt-1 text-sm text-slate-200">
+                        Resume playback to keep this opening in sync with sound.
+                      </p>
+                      <button
+                        type="button"
+                        className="btn-primary mt-3 px-4 py-2 text-sm"
+                        onClick={handleResumeRemotePlayback}
+                      >
+                        Resume playback
+                      </button>
+                    </div>
                   </div>
                 ) : null}
                 <div className="absolute inset-0 z-30 pointer-events-none">
