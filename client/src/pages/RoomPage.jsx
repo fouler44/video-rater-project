@@ -1499,21 +1499,34 @@ export default function RoomPage() {
     setMyRating(numericScore);
 
     try {
-      await apiPost("/api/rooms/rate", {
+      const response = await apiPost("/api/rooms/rate", {
         roomId,
         openingId: currentOpening.id,
         score: numericScore,
       });
 
+      const persistedRawScore = Number(response?.rating?.score);
+      const persistedScore = Number.isFinite(persistedRawScore)
+        ? persistedRawScore
+        : numericScore;
+
+      if (persistedScore !== numericScore) {
+        setMyRating(persistedScore);
+        showNotice(
+          `Score adjusted by server (${formatRatingValue(numericScore)} -> ${formatRatingValue(persistedScore)}).`,
+          "warning",
+        );
+      }
+
       setCurrentOpeningVotes((prev) => {
         const previousVote = prev.find((item) => item.user_uuid === identity.userId);
-        patchUserAverageFromRating(identity.userId, numericScore, previousVote?.score ?? null);
-        return upsertVote(prev, { user_uuid: identity.userId, score: numericScore });
+        patchUserAverageFromRating(identity.userId, persistedScore, previousVote?.score ?? null);
+        return upsertVote(prev, { user_uuid: identity.userId, score: persistedScore });
       });
       fetchRoomUserAverages();
       sendPartyEvent("rating:submitted", {
         openingId: currentOpening.id,
-        score: numericScore,
+        score: persistedScore,
       });
     } catch (error) {
       setMyRating(previous);
