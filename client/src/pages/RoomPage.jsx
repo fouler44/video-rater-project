@@ -975,6 +975,26 @@ export default function RoomPage() {
   }, [isHost, room?.status]);
 
   useEffect(() => {
+    if (isHostRef.current) return;
+
+    const snapshot = lastIncomingPlayerStateRef.current;
+    if (!snapshot) return;
+
+    const roomOpeningIndex = Number(room?.current_opening_index);
+    const snapshotOpeningIndex = Number(snapshot?.openingIndex);
+
+    if (!Number.isInteger(roomOpeningIndex) || !Number.isInteger(snapshotOpeningIndex)) {
+      return;
+    }
+
+    if (roomOpeningIndex !== snapshotOpeningIndex) {
+      return;
+    }
+
+    applyRemotePlayerState(snapshot, false);
+  }, [room?.current_opening_index, room?.status, playerReady]);
+
+  useEffect(() => {
     if (!uiNotice) return;
 
     const timeout = window.setTimeout(() => {
@@ -1128,6 +1148,8 @@ export default function RoomPage() {
     }
 
     if (type === "player:sync") {
+      lastIncomingPlayerStateRef.current = payload;
+
       if (isHostRef.current && payload.sourceUserUuid === identity?.userId) {
         return;
       }
