@@ -1302,8 +1302,7 @@ export default function RoomPage() {
     expectedRemotePlaybackRef.current = shouldPlay;
 
     if (shouldPlay && currentState !== PLAYING) {
-      remotePlayerMutationUntilRef.current = Date.now() + 500;
-      player.playVideo();
+      ensureRemotePlayback(player, targetTimestamp);
     }
 
     if (!shouldPlay && currentState === PLAYING) {
@@ -1312,6 +1311,32 @@ export default function RoomPage() {
     }
 
     setPlayerIsPlaying(shouldPlay);
+  }
+
+  function ensureRemotePlayback(player, targetTimestamp = 0) {
+    if (!isPlayerApiReady(player)) return;
+
+    const PLAYING = Number(window.YT?.PlayerState?.PLAYING);
+    remotePlayerMutationUntilRef.current = Date.now() + 500;
+    player.playVideo?.();
+
+    window.setTimeout(() => {
+      const nowState = Number(player.getPlayerState?.());
+      if (nowState === PLAYING) return;
+
+      // Browser autoplay policies can block remote unmuted playback for non-host clients.
+      player.mute?.();
+      setPlayerMuted(true);
+      remotePlayerMutationUntilRef.current = Date.now() + 500;
+      player.playVideo?.();
+
+      const safeTs = Math.max(0, Number(targetTimestamp || 0));
+      if (safeTs > 0) {
+        player.seekTo?.(safeTs, true);
+      }
+
+      showNotice("Autoplay blocked: resumed muted.", "warning");
+    }, 320);
   }
 
   function publishHostPlayerState(reason, isPlayingOverride) {
