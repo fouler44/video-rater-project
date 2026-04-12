@@ -45,6 +45,11 @@ function normalizeRatingValue(value, fallback = 5) {
   return Number(halfStep.toFixed(1));
 }
 
+function isInRatingRange(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 1 && numeric <= 10;
+}
+
 function formatRatingValue(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "-";
@@ -1163,15 +1168,21 @@ export default function RoomPage() {
       if (String(payload.openingId || "") !== String(currentOpeningRef.current.id)) return;
 
       const userUuid = String(payload.userUuid || "").trim();
-      const score = Number(payload.score);
+      if (!userUuid) return;
 
-      if (!userUuid || !isValidRatingValue(score)) return;
+      const rawScore = Number(payload.score);
+      const normalizedScore = normalizeRatingValue(rawScore, rawScore);
 
+      if (isInRatingRange(normalizedScore)) {
         setCurrentOpeningVotes((prev) => {
           const previousVote = prev.find((item) => item.user_uuid === userUuid);
-          patchUserAverageFromRating(userUuid, score, previousVote?.score ?? null);
-          return upsertVote(prev, { user_uuid: userUuid, score });
+          patchUserAverageFromRating(userUuid, normalizedScore, previousVote?.score ?? null);
+          return upsertVote(prev, { user_uuid: userUuid, score: normalizedScore });
         });
+      }
+
+      // Reconcile with DB to avoid missing decimal updates due transient realtime desync.
+      fetchCurrentOpeningVotes();
       return;
     }
 
