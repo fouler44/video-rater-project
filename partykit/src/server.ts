@@ -389,7 +389,7 @@ export default class AnimeRoomParty implements Party.Server {
 
   private async handleOpeningAdvance(payload: any, actorUserUuid: string) {
     try {
-      await this.ensureHydrated(true);
+      await this.ensureHydrated();
 
       const connectedUserUuids = this.getConnectedUserUuids();
       const state = await this.fetchInternal<RoomStateResponse>(`/api/internal/rooms/${this.party.id}/state`);
@@ -503,7 +503,7 @@ export default class AnimeRoomParty implements Party.Server {
 
   private async handleQueueShuffle(actorUserUuid: string) {
     try {
-      await this.ensureHydrated(true);
+      await this.ensureHydrated();
 
       const shuffled = await this.fetchInternal<ShuffleResponse>(`/api/internal/rooms/${this.party.id}/shuffle`, {
         method: "POST",
