@@ -29,6 +29,18 @@ function normalizeSearchText(value) {
   return String(value || "").toLowerCase().trim();
 }
 
+function resolveAnimeRomajiTitle(anime = {}) {
+  return (
+    String(anime?.title || "").trim()
+    || String(
+      anime?.titles?.find((entry) => String(entry?.type || "").toLowerCase() === "default")?.title || "",
+    ).trim()
+    || String(anime?.title_romanized || "").trim()
+    || String(anime?.title_english || "").trim()
+    || String(anime?.title_japanese || "").trim()
+  );
+}
+
 function tokenizeSearchQuery(value) {
   return normalizeSearchText(value)
     .replace(/[^\p{L}\p{N}\s]+/gu, " ")
@@ -461,7 +473,7 @@ export default function CreateListPage() {
 
     setThemeDialog({ open: false, anime: null, options: [], selectedKeys: [] });
 
-    const animeTitle = anime.title_english || anime.title || `MAL ${animeId}`;
+    const animeTitle = resolveAnimeRomajiTitle(anime) || `MAL ${animeId}`;
     const thumb = anime.images?.jpg?.image_url || anime.images?.jpg?.large_image_url || "";
 
     const existingKeys = new Set(

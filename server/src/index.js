@@ -1179,8 +1179,15 @@ app.post("/api/admin/backfill/mal-openings-japanese-titles", async (req, res) =>
           } else {
             listUpdated += matchingOpenings.length;
           }
-        } catch {
-          listFailed += matchingOpenings.length;
+        } catch (error) {
+          const message = String(error?.message || "");
+          const isMissingInJikan = message.includes("404");
+
+          if (isMissingInJikan) {
+            listSkipped += matchingOpenings.length;
+          } else {
+            listFailed += matchingOpenings.length;
+          }
         }
 
         if (delayMs > 0) {

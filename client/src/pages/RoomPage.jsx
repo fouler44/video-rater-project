@@ -1620,7 +1620,7 @@ export default function RoomPage() {
             {partyConnected ? "Realtime" : "Reconnecting"}
           </div>
 
-          {(isHost || room?.owner_user_id === identity?.userId || identity?.role === "admin") && (
+          {identity?.role === "admin" && (
             <button
               className="p-2 hover:bg-slate-800 rounded-lg transition-colors"
               title="Delete room"
