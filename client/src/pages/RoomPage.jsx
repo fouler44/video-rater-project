@@ -27,6 +27,9 @@ const DRIFT_THRESHOLD_SECONDS = 3;
 const HOST_SYNC_INTERVAL_MS = 12000;
 const PARTY_HEARTBEAT_MS = 20000;
 const REMOTE_PLAYBACK_CONSENT_STORAGE_KEY = "room-remote-playback-consent";
+const REMOTE_PLAYBACK_BLOCKED_NOTICE = "Autoplay with sound was blocked. Press Resume playback.";
+const REMOTE_PLAYBACK_PROBE_INITIAL_DELAY_MS = 900;
+const REMOTE_PLAYBACK_PROBE_RETRY_DELAY_MS = 900;
 
 let youtubeIframePromise = null;
 
@@ -340,6 +343,8 @@ export default function RoomPage() {
   const desiredVideoRef = useRef(null);
   const remotePlaybackNeedsGestureRef = useRef(false);
   const remotePlaybackConsentRef = useRef(remotePlaybackConsent);
+  const remotePlaybackProbeTimerRef = useRef(null);
+  const remotePlaybackProbeTokenRef = useRef(0);
   const confirmResolverRef = useRef(null);
   const nativeControlsRef = useRef(false);
   const lastRateSubmitRef = useRef({ key: "", ts: 0 });
@@ -376,6 +381,10 @@ export default function RoomPage() {
       if (roomUserStatsRefreshTimerRef.current) {
         window.clearTimeout(roomUserStatsRefreshTimerRef.current);
         roomUserStatsRefreshTimerRef.current = null;
+      }
+      if (remotePlaybackProbeTimerRef.current) {
+        window.clearTimeout(remotePlaybackProbeTimerRef.current);
+        remotePlaybackProbeTimerRef.current = null;
       }
     };
   }, []);
@@ -511,6 +520,22 @@ export default function RoomPage() {
   function setRemotePlaybackGestureRequirement(required) {
     remotePlaybackNeedsGestureRef.current = Boolean(required);
     setRemotePlaybackNeedsGesture(Boolean(required));
+  }
+
+  function clearRemotePlaybackProbe() {
+    remotePlaybackProbeTokenRef.current += 1;
+    if (remotePlaybackProbeTimerRef.current) {
+      window.clearTimeout(remotePlaybackProbeTimerRef.current);
+      remotePlaybackProbeTimerRef.current = null;
+    }
+  }
+
+  function clearRemotePlaybackBlockedNotice() {
+    setUiNotice((prev) => {
+      if (!prev) return prev;
+      if (prev.message !== REMOTE_PLAYBACK_BLOCKED_NOTICE) return prev;
+      return null;
+    });
   }
 
   useEffect(() => {
@@ -1111,7 +1136,9 @@ export default function RoomPage() {
 
               if (ytState === PLAYING) {
                 setPlayerIsPlaying(true);
+                clearRemotePlaybackProbe();
                 setRemotePlaybackGestureRequirement(false);
+                clearRemotePlaybackBlockedNotice();
               }
               if (ytState === PAUSED || ytState === ENDED) {
                 setPlayerIsPlaying(false);
@@ -1205,8 +1232,10 @@ export default function RoomPage() {
     const player = playerRef.current;
 
     if (room?.status !== "playing") {
+      clearRemotePlaybackProbe();
       desiredVideoRef.current = null;
       setRemotePlaybackGestureRequirement(false);
+      clearRemotePlaybackBlockedNotice();
       player?.pauseVideo?.();
       setPlayerIsPlaying(false);
       return;
@@ -1214,8 +1243,10 @@ export default function RoomPage() {
 
     const nextVideoId = String(currentOpening?.youtube_video_id || "").trim();
     if (!nextVideoId) {
+      clearRemotePlaybackProbe();
       desiredVideoRef.current = null;
       setRemotePlaybackGestureRequirement(false);
+      clearRemotePlaybackBlockedNotice();
       player?.pauseVideo?.();
       setPlayerIsPlaying(false);
       return;
@@ -1615,7 +1646,9 @@ export default function RoomPage() {
       setMyRating(0);
       setGraceUntilTs(Date.now() + Math.max(2000, Math.min(3500, graceMs)));
       setPlayerIsPlaying(false);
+      clearRemotePlaybackProbe();
       setRemotePlaybackGestureRequirement(false);
+      clearRemotePlaybackBlockedNotice();
 
       const nextVideoId = String(payload.videoId || "").trim();
       if (nextVideoId) {
@@ -1706,13 +1739,17 @@ export default function RoomPage() {
     }
 
     if (!shouldPlay && currentState === PLAYING) {
+      clearRemotePlaybackProbe();
       setRemotePlaybackGestureRequirement(false);
+      clearRemotePlaybackBlockedNotice();
       remotePlayerMutationUntilRef.current = Date.now() + 500;
       player.pauseVideo?.();
     }
 
     if (!shouldPlay) {
+      clearRemotePlaybackProbe();
       setRemotePlaybackGestureRequirement(false);
+      clearRemotePlaybackBlockedNotice();
     }
 
     setPlayerIsPlaying(shouldPlay);
@@ -1722,17 +1759,38 @@ export default function RoomPage() {
     if (!isPlayerApiReady(player)) return;
 
     const PLAYING = Number(window.YT?.PlayerState?.PLAYING);
+    const BUFFERING = Number(window.YT?.PlayerState?.BUFFERING);
+    const UNSTARTED = Number(window.YT?.PlayerState?.UNSTARTED);
+    const CUED = Number(window.YT?.PlayerState?.CUED);
+
+    clearRemotePlaybackProbe();
     remotePlayerMutationUntilRef.current = Date.now() + 500;
     player.playVideo?.();
 
-    window.setTimeout(() => {
-      const nowState = Number(player.getPlayerState?.());
-      if (nowState === PLAYING) return;
-      if (!expectedRemotePlaybackRef.current) return;
+    const probeToken = remotePlaybackProbeTokenRef.current + 1;
+    remotePlaybackProbeTokenRef.current = probeToken;
 
-      setRemotePlaybackGestureRequirement(true);
-      showNotice("Autoplay with sound was blocked. Press Resume playback.", "warning");
-    }, 320);
+    const scheduleProbe = (delayMs, attempt = 0) => {
+      remotePlaybackProbeTimerRef.current = window.setTimeout(() => {
+        if (remotePlaybackProbeTokenRef.current !== probeToken) return;
+
+        const nowState = Number(player.getPlayerState?.());
+        if (nowState === PLAYING) return;
+        if (!expectedRemotePlaybackRef.current) return;
+
+        const likelyStillStarting = nowState === BUFFERING || nowState === UNSTARTED || nowState === CUED;
+        if (likelyStillStarting && attempt === 0) {
+          scheduleProbe(REMOTE_PLAYBACK_PROBE_RETRY_DELAY_MS, attempt + 1);
+          return;
+        }
+
+        remotePlaybackProbeTimerRef.current = null;
+        setRemotePlaybackGestureRequirement(true);
+        showNotice(REMOTE_PLAYBACK_BLOCKED_NOTICE, "warning");
+      }, delayMs);
+    };
+
+    scheduleProbe(REMOTE_PLAYBACK_PROBE_INITIAL_DELAY_MS);
   }
 
   function publishHostPlayerState(reason, isPlayingOverride) {
