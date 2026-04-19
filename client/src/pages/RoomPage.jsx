@@ -339,6 +339,7 @@ export default function RoomPage() {
 
   const playerRef = useRef(null);
   const playerContainerRef = useRef(null);
+  const ratingSliderRef = useRef(null);
   const currentVideoIdRef = useRef("");
   const desiredVideoRef = useRef(null);
   const remotePlaybackNeedsGestureRef = useRef(false);
@@ -347,6 +348,7 @@ export default function RoomPage() {
   const remotePlaybackProbeTokenRef = useRef(0);
   const confirmResolverRef = useRef(null);
   const nativeControlsRef = useRef(false);
+  const ratingSliderTouchedRef = useRef(false);
   const lastRateSubmitRef = useRef({ key: "", ts: 0 });
   const inFlightRateKeysRef = useRef(new Set());
   const voteFetchSeqRef = useRef(0);
@@ -898,6 +900,15 @@ export default function RoomPage() {
       cancelled = true;
     };
   }, [roomId, currentOpening?.id, identity?.userId]);
+
+  useEffect(() => {
+    ratingSliderTouchedRef.current = false;
+
+    const slider = ratingSliderRef.current;
+    if (slider && document.activeElement === slider) {
+      slider.blur();
+    }
+  }, [currentOpening?.id]);
 
   useEffect(() => {
     setSliderRating(myRating > 0 ? normalizeRatingValue(myRating, 5) : 5);
@@ -2221,12 +2232,17 @@ export default function RoomPage() {
   function handleRatingSliderChange(nextValue) {
     const numeric = normalizeRatingValue(nextValue, sliderRating);
     if (!isValidRatingValue(numeric)) return;
+    ratingSliderTouchedRef.current = true;
     setSliderRating(numeric);
   }
 
-  function commitRatingFromSlider(nextValue = sliderRating) {
+  function commitRatingFromSlider(nextValue = sliderRating, { requireInteraction = false } = {}) {
+    if (requireInteraction && !ratingSliderTouchedRef.current) return;
+
     const numeric = normalizeRatingValue(nextValue, sliderRating);
     if (!isValidRatingValue(numeric)) return;
+
+    ratingSliderTouchedRef.current = false;
     if (numeric === Number(myRating || 0)) return;
     handleRate(numeric);
   }
@@ -2684,18 +2700,20 @@ export default function RoomPage() {
                     </span>
                   </div>
                   <input
+                    key={currentOpening?.id || "rating-slider"}
+                    ref={ratingSliderRef}
                     type="range"
                     min={1}
                     max={10}
                     step={0.5}
                     value={sliderRating}
                     onChange={(event) => handleRatingSliderChange(event.currentTarget.valueAsNumber)}
-                    onMouseUp={(event) => commitRatingFromSlider(event.currentTarget.valueAsNumber)}
-                    onTouchEnd={(event) => commitRatingFromSlider(event.currentTarget.valueAsNumber)}
-                    onBlur={(event) => commitRatingFromSlider(event.currentTarget.valueAsNumber)}
+                    onMouseUp={(event) => commitRatingFromSlider(event.currentTarget.valueAsNumber, { requireInteraction: true })}
+                    onTouchEnd={(event) => commitRatingFromSlider(event.currentTarget.valueAsNumber, { requireInteraction: true })}
+                    onBlur={(event) => commitRatingFromSlider(event.currentTarget.valueAsNumber, { requireInteraction: true })}
                     onKeyUp={(event) => {
                       if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") {
-                        commitRatingFromSlider(event.currentTarget.valueAsNumber);
+                        commitRatingFromSlider(event.currentTarget.valueAsNumber, { requireInteraction: true });
                       }
                     }}
                     className="mx-auto block h-3 w-[calc(90%+12px)] rounded-full bg-slate-700 accent-brand-400 cursor-pointer"
