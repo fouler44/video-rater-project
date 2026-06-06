@@ -74,6 +74,8 @@ const PARTYKIT_INTERNAL_SECRET = String(process.env.PARTYKIT_INTERNAL_SECRET || 
 const PARTYKIT_API_SIGNING_SECRET = String(process.env.PARTYKIT_API_SIGNING_SECRET || "").trim();
 const INTERNAL_MAX_SKEW_MS = 30_000;
 const usedInternalNonces = new Map();
+const LIST_OPENING_SELECT = "id,list_id,anime_id,anime_title,opening_label,theme_kind,youtube_video_id,youtube_start_seconds,thumbnail_url,order_index";
+const ROOM_OPENING_SELECT = "id,room_id,source_list_opening_id,anime_id,anime_title,opening_label,theme_kind,youtube_video_id,youtube_start_seconds,thumbnail_url,order_index";
 
 /** Simple idempotency cache for shuffle operations. Keyed by roomId:idempotencyKey */
 class IdempotencyCache {
@@ -532,7 +534,7 @@ async function fetchRoomParticipants(roomId) {
 async function fetchListOpenings(listId) {
   const { data, error } = await supabaseAdmin
     .from("list_openings")
-    .select("id,list_id,anime_id,anime_title,opening_label,theme_kind,youtube_video_id,thumbnail_url,order_index")
+    .select(LIST_OPENING_SELECT)
     .eq("list_id", listId)
     .order("order_index", { ascending: true });
 
@@ -541,6 +543,129 @@ async function fetchListOpenings(listId) {
   }
 
   return data || [];
+}
+
+function mapListOpeningToRoomOpening(roomId, opening, index) {
+  return {
+    room_id: roomId,
+    source_list_opening_id: opening.id,
+    anime_id: opening.anime_id,
+    anime_title: opening.anime_title,
+    opening_label: opening.opening_label,
+    theme_kind: opening.theme_kind || null,
+    youtube_video_id: String(opening.youtube_video_id || "").trim() || null,
+    youtube_start_seconds: Number(opening.youtube_start_seconds || 0),
+    thumbnail_url: String(opening.thumbnail_url || "").trim() || null,
+    order_index: Number.isInteger(Number(opening.order_index)) ? Number(opening.order_index) : index,
+  };
+}
+
+async function copyListOpeningsToRoom(roomId, listId) {
+  const sourceOpenings = await fetchListOpenings(listId);
+  if (sourceOpenings.length === 0) return [];
+
+  const rows = sourceOpenings.map((opening, index) => mapListOpeningToRoomOpening(roomId, opening, index));
+
+  for (let start = 0; start < rows.length; start += BULK_INSERT_CHUNK_SIZE) {
+    const chunk = rows.slice(start, start + BULK_INSERT_CHUNK_SIZE);
+    const { error } = await supabaseAdmin
+      .from("room_openings")
+      .upsert(chunk, { onConflict: "room_id,source_list_opening_id" });
+
+    if (error) {
+      throw new Error(error.message || "Could not copy openings into room queue");
+    }
+  }
+
+  return rows;
+}
+
+async function fetchRoomOpenings(roomId, listId = "") {
+  const { data, error } = await supabaseAdmin
+    .from("room_openings")
+    .select(ROOM_OPENING_SELECT)
+    .eq("room_id", roomId)
+    .order("order_index", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message || "Could not load room openings");
+  }
+
+  if ((data || []).length > 0 || !listId) {
+    return data || [];
+  }
+
+  await copyListOpeningsToRoom(roomId, listId);
+
+  const { data: copied, error: copiedError } = await supabaseAdmin
+    .from("room_openings")
+    .select(ROOM_OPENING_SELECT)
+    .eq("room_id", roomId)
+    .order("order_index", { ascending: true });
+
+  if (copiedError) {
+    throw new Error(copiedError.message || "Could not load copied room openings");
+  }
+
+  return copied || [];
+}
+
+async function finishRoomAndStoreRankings(roomId, roomData) {
+  const openings = await fetchRoomOpenings(roomId, roomData.list_id);
+  const { data: ratings, error: ratingsError } = await supabaseAdmin
+    .from("ratings")
+    .select("room_opening_id,list_opening_id,user_uuid,user_id,score")
+    .eq("room_id", roomId);
+
+  if (ratingsError) {
+    throw new Error(ratingsError.message || "Could not load ratings");
+  }
+
+  const rankingRows = [];
+
+  for (const opening of openings) {
+    const openingId = opening.id;
+    const sourceOpeningId = opening.source_list_opening_id || null;
+    const scoped = (ratings || []).filter((rating) => {
+      if (rating.room_opening_id) return rating.room_opening_id === openingId;
+      return sourceOpeningId && rating.list_opening_id === sourceOpeningId;
+    });
+
+    if (scoped.length > 0) {
+      const avg = scoped.reduce((sum, rating) => sum + Number(rating.score || 0), 0) / scoped.length;
+      rankingRows.push({
+        room_id: roomId,
+        room_opening_id: openingId,
+        list_opening_id: sourceOpeningId,
+        ranking_type: "group",
+        user_uuid: null,
+        user_id: null,
+        score: Number(avg.toFixed(2)),
+      });
+    }
+
+    for (const rating of scoped) {
+      rankingRows.push({
+        room_id: roomId,
+        room_opening_id: openingId,
+        list_opening_id: sourceOpeningId,
+        ranking_type: "personal",
+        user_uuid: rating.user_uuid,
+        user_id: rating.user_id || null,
+        score: rating.score,
+      });
+    }
+  }
+
+  await supabaseAdmin.from("room_rankings").delete().eq("room_id", roomId);
+  if (rankingRows.length > 0) {
+    const { error: rankingsError } = await supabaseAdmin.from("room_rankings").insert(rankingRows);
+    if (rankingsError) {
+      throw new Error(rankingsError.message || "Could not store rankings");
+    }
+  }
+
+  return rankingRows.length;
 }
 
 function shuffleArray(items) {
@@ -1438,7 +1563,7 @@ app.get("/api/internal/rooms/:roomId/state", async (req, res) => {
   if (!room) return res.status(404).json({ error: "Room not found" });
 
   try {
-    const openings = await fetchListOpenings(room.list_id);
+    const openings = await fetchRoomOpenings(room.id, room.list_id);
     const currentOpening = openings.find((item) => item.order_index === room.current_opening_index) || null;
     const members = await fetchRoomParticipants(roomId);
 
@@ -1446,9 +1571,9 @@ app.get("/api/internal/rooms/:roomId/state", async (req, res) => {
     if (currentOpening?.id) {
       const { data: ratingsData, error: ratingsError } = await supabaseAdmin
         .from("ratings")
-        .select("user_uuid,score,list_opening_id")
+        .select("user_uuid,score,room_opening_id,list_opening_id")
         .eq("room_id", roomId)
-        .eq("list_opening_id", currentOpening.id);
+        .eq("room_opening_id", currentOpening.id);
 
       if (ratingsError) {
         return res.status(500).json({ error: ratingsError.message });
@@ -1522,7 +1647,7 @@ app.post("/api/internal/rooms/:roomId/advance", async (req, res) => {
   }
 
   try {
-    const openings = await fetchListOpenings(room.list_id);
+    const openings = await fetchRoomOpenings(room.id, room.list_id);
     if (openings.length === 0) {
       return res.status(400).json({ error: "No openings in room list" });
     }
@@ -1534,6 +1659,13 @@ app.post("/api/internal/rooms/:roomId/advance", async (req, res) => {
     const shouldFinish = forceFinish || targetIndex > lastIndex || previousOpeningIndex >= lastIndex;
 
     if (shouldFinish) {
+      let rankingsStored = 0;
+      try {
+        rankingsStored = await finishRoomAndStoreRankings(roomId, room);
+      } catch (error) {
+        return res.status(500).json({ error: error.message || "Could not store room rankings" });
+      }
+
       const { data: finishedRoom, error: finishedError } = await supabaseAdmin
         .from("rooms")
         .update({
@@ -1550,6 +1682,7 @@ app.post("/api/internal/rooms/:roomId/advance", async (req, res) => {
         room: finishedRoom,
         previousOpeningIndex,
         nextOpening: null,
+        rankingsStored,
       });
     }
 
@@ -1629,7 +1762,7 @@ app.post("/api/rooms/:roomId/shuffle", async (req, res) => {
     }
 
     // Fetch openings and shuffle
-    const openings = await fetchListOpenings(room.list_id);
+    const openings = await fetchRoomOpenings(room.id, room.list_id);
 
     if (openings.length <= 1) {
       const result = {
@@ -1659,11 +1792,14 @@ app.post("/api/rooms/:roomId/shuffle", async (req, res) => {
     const orderUpdates = shuffledOpenings
       .map((opening, index) => ({
         id: opening.id,
-        list_id: opening.list_id,
+        room_id: opening.room_id,
+        source_list_opening_id: opening.source_list_opening_id || null,
         anime_id: opening.anime_id,
         anime_title: opening.anime_title,
         opening_label: opening.opening_label,
+        theme_kind: opening.theme_kind || null,
         youtube_video_id: opening.youtube_video_id || null,
+        youtube_start_seconds: Number(opening.youtube_start_seconds || 0),
         thumbnail_url: opening.thumbnail_url || null,
         order_index: index,
       }))
@@ -1680,7 +1816,7 @@ app.post("/api/rooms/:roomId/shuffle", async (req, res) => {
       for (let start = 0; start < orderUpdates.length; start += BULK_INSERT_CHUNK_SIZE) {
         const chunk = orderUpdates.slice(start, start + BULK_INSERT_CHUNK_SIZE);
         const { error: updateError } = await supabaseAdmin
-          .from("list_openings")
+          .from("room_openings")
           .upsert(chunk, { onConflict: "id" });
 
         if (updateError) {
@@ -1755,7 +1891,7 @@ app.post("/api/internal/rooms/:roomId/shuffle", async (req, res) => {
   }
 
   try {
-    const openings = await fetchListOpenings(room.list_id);
+    const openings = await fetchRoomOpenings(room.id, room.list_id);
     if (openings.length <= 1) {
       return res.json({
         room: {
@@ -1776,11 +1912,14 @@ app.post("/api/internal/rooms/:roomId/shuffle", async (req, res) => {
     const orderUpdates = reorderedOpenings
       .map((opening, index) => ({
         id: opening.id,
-        list_id: opening.list_id,
+        room_id: opening.room_id,
+        source_list_opening_id: opening.source_list_opening_id || null,
         anime_id: opening.anime_id,
         anime_title: opening.anime_title,
         opening_label: opening.opening_label,
+        theme_kind: opening.theme_kind || null,
         youtube_video_id: opening.youtube_video_id || null,
+        youtube_start_seconds: Number(opening.youtube_start_seconds || 0),
         thumbnail_url: opening.thumbnail_url || null,
         order_index: index,
       }))
@@ -1794,7 +1933,7 @@ app.post("/api/internal/rooms/:roomId/shuffle", async (req, res) => {
       for (let start = 0; start < orderUpdates.length; start += BULK_INSERT_CHUNK_SIZE) {
         const chunk = orderUpdates.slice(start, start + BULK_INSERT_CHUNK_SIZE);
         const { error: updateError } = await supabaseAdmin
-          .from("list_openings")
+          .from("room_openings")
           .upsert(chunk, { onConflict: "id" });
 
         if (updateError) {
@@ -1860,6 +1999,29 @@ app.get("/api/rooms/by-code/:code", joinByCodeLimiter, async (req, res) => {
   res.json({ room: data });
 });
 
+app.get("/api/rooms/:roomId/openings", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+
+  const roomId = parseSchema(RoomIdSchema, String(req.params.roomId || ""), res, "Invalid roomId");
+  if (!roomId) return;
+
+  const { data: room, error: roomError } = await supabaseAdmin
+    .from("rooms")
+    .select("id,list_id")
+    .eq("id", roomId)
+    .maybeSingle();
+
+  if (roomError) return res.status(500).json({ error: roomError.message });
+  if (!room) return res.status(404).json({ error: "Room not found" });
+
+  try {
+    const openings = await fetchRoomOpenings(room.id, room.list_id);
+    return res.json({ openings });
+  } catch (error) {
+    return internalError(req, res, error, "room_openings_fetch_failed");
+  }
+});
+
 app.post("/api/rooms/:roomId/presence", async (req, res) => {
   if (!ensureSupabase(res)) return;
 
@@ -1909,7 +2071,13 @@ app.post("/api/rooms", async (req, res) => {
 
   if (roomError) return res.status(500).json({ error: roomError.message });
 
-  await upsertRoomMembership(room.id, auth.user);
+  try {
+    await copyListOpeningsToRoom(room.id, listId);
+    await upsertRoomMembership(room.id, auth.user);
+  } catch (error) {
+    await supabaseAdmin.from("rooms").delete().eq("id", room.id);
+    return internalError(req, res, error, "room_setup_failed");
+  }
 
   res.status(201).json({ room });
 });
@@ -1992,20 +2160,29 @@ app.post("/api/rooms/rate", async (req, res) => {
     return res.status(409).json({ error: "Room is not currently accepting ratings" });
   }
 
-  const { data: opening, error: openingError } = await supabaseAdmin
-    .from("list_openings")
-    .select("id,order_index")
+  let { data: opening, error: openingError } = await supabaseAdmin
+    .from("room_openings")
+    .select(ROOM_OPENING_SELECT)
     .eq("id", openingId)
-    .eq("list_id", room.list_id)
+    .eq("room_id", roomId)
     .maybeSingle();
 
   if (openingError) return res.status(500).json({ error: openingError.message });
   if (!opening) {
-    return res.status(400).json({ error: "Opening does not belong to this room list" });
+    try {
+      const roomOpenings = await fetchRoomOpenings(room.id, room.list_id);
+      opening = roomOpenings.find((item) => item.source_list_opening_id === openingId) || null;
+    } catch (error) {
+      return res.status(500).json({ error: error.message || "Could not load room openings" });
+    }
+  }
+
+  if (!opening) {
+    return res.status(400).json({ error: "Opening does not belong to this room queue" });
   }
 
   // Ratings are only writable for the room's currently active opening.
-  if (opening.order_index !== room.current_opening_index) {
+  if (Number(opening.order_index) !== Number(room.current_opening_index)) {
     return res.status(409).json({ error: "Ratings for this opening are locked" });
   }
 
@@ -2023,13 +2200,14 @@ app.post("/api/rooms/rate", async (req, res) => {
     .from("ratings")
     .upsert({
       room_id: roomId,
-      list_opening_id: openingId,
+      room_opening_id: opening.id,
+      list_opening_id: opening.source_list_opening_id || null,
       user_uuid: auth.user.id,
       user_id: auth.user.id,
       score,
       submitted_at: new Date().toISOString(),
-    }, { onConflict: "room_id,list_opening_id,user_uuid" })
-    .select("id,room_id,list_opening_id,user_uuid,user_id,score,submitted_at")
+    }, { onConflict: "room_id,room_opening_id,user_uuid" })
+    .select("id,room_id,room_opening_id,list_opening_id,user_uuid,user_id,score,submitted_at")
     .single();
 
   if (error) {
@@ -2045,7 +2223,8 @@ app.post("/api/rooms/rate", async (req, res) => {
   logEvent("info", "room_rate_persisted", {
     requestId: req.requestId,
     roomId,
-    openingId,
+    openingId: opening.id,
+    sourceListOpeningId: opening.source_list_opening_id || null,
     userUuid: auth?.user?.id || null,
     scoreRaw: req.body?.score,
     score: Number(data?.score || score),
@@ -2092,7 +2271,7 @@ app.post("/api/rooms/:roomId/advance", async (req, res) => {
     return res.status(403).json({ error: "Only the host/owner or admin can change the opening" });
   }
 
-  const openings = await fetchListOpenings(room.list_id);
+  const openings = await fetchRoomOpenings(room.id, room.list_id);
   if (openings.length === 0) {
     return res.status(400).json({ error: "This room list has no openings" });
   }
@@ -2139,7 +2318,7 @@ app.post("/api/rooms/:roomId/opening", async (req, res) => {
     return res.status(403).json({ error: "Only the host/owner or admin can change the opening" });
   }
 
-  const openings = await fetchListOpenings(room.list_id);
+  const openings = await fetchRoomOpenings(room.id, room.list_id);
   if (openings.length === 0) {
     return res.status(400).json({ error: "This room list has no openings" });
   }
@@ -2181,53 +2360,11 @@ app.post("/api/rooms/:roomId/end", async (req, res) => {
     return res.status(403).json({ error: "Only the host/owner or admin can end the room" });
   }
 
-  const { data: openings, error: openingsError } = await supabaseAdmin
-    .from("list_openings")
-    .select("id")
-    .eq("list_id", roomData.list_id);
-
-  if (openingsError) return res.status(500).json({ error: openingsError.message });
-
-  const { data: ratings, error: ratingsError } = await supabaseAdmin
-    .from("ratings")
-    .select("list_opening_id,user_uuid,user_id,score")
-    .eq("room_id", roomId);
-
-  if (ratingsError) return res.status(500).json({ error: ratingsError.message });
-
-  const rankingRows = [];
-  const openingIds = (openings || []).map((item) => item.id);
-
-  for (const openingId of openingIds) {
-    const scoped = (ratings || []).filter((r) => r.list_opening_id === openingId);
-    if (scoped.length > 0) {
-      const avg = scoped.reduce((sum, r) => sum + r.score, 0) / scoped.length;
-      rankingRows.push({
-        room_id: roomId,
-        list_opening_id: openingId,
-        ranking_type: "group",
-        user_uuid: null,
-        user_id: null,
-        score: Number(avg.toFixed(2)),
-      });
-    }
-
-    for (const rating of scoped) {
-      rankingRows.push({
-        room_id: roomId,
-        list_opening_id: openingId,
-        ranking_type: "personal",
-        user_uuid: rating.user_uuid,
-        user_id: rating.user_id || null,
-        score: rating.score,
-      });
-    }
-  }
-
-  await supabaseAdmin.from("room_rankings").delete().eq("room_id", roomId);
-  if (rankingRows.length > 0) {
-    const { error: rankingsError } = await supabaseAdmin.from("room_rankings").insert(rankingRows);
-    if (rankingsError) return res.status(500).json({ error: rankingsError.message });
+  let rankingsStored = 0;
+  try {
+    rankingsStored = await finishRoomAndStoreRankings(roomId, roomData);
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Could not store rankings" });
   }
 
   const { data, error } = await supabaseAdmin
@@ -2238,7 +2375,7 @@ app.post("/api/rooms/:roomId/end", async (req, res) => {
     .single();
 
   if (error) return res.status(500).json({ error: error.message });
-  res.json({ room: data, rankingsStored: rankingRows.length });
+  res.json({ room: data, rankingsStored });
 });
 
 app.delete("/api/rooms/:roomId", async (req, res) => {

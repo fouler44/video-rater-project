@@ -43,6 +43,7 @@ create table if not exists list_openings (
   anime_id bigint not null,
   anime_title text not null,
   opening_label text not null,
+  theme_kind text,
   youtube_video_id text,
   youtube_start_seconds int not null default 0,
   thumbnail_url text,
@@ -66,6 +67,25 @@ create table if not exists rooms (
 
 create index if not exists idx_rooms_public_status on rooms(is_public, status);
 
+create table if not exists room_openings (
+  id uuid primary key default gen_random_uuid(),
+  room_id uuid not null references rooms(id) on delete cascade,
+  source_list_opening_id uuid references list_openings(id) on delete set null,
+  anime_id bigint not null,
+  anime_title text not null,
+  opening_label text not null,
+  theme_kind text,
+  youtube_video_id text,
+  youtube_start_seconds int not null default 0,
+  thumbnail_url text,
+  order_index int not null default 0,
+  created_at timestamptz not null default now(),
+  unique (room_id, source_list_opening_id)
+);
+
+create index if not exists idx_room_openings_room on room_openings(room_id, order_index);
+create index if not exists idx_room_openings_source on room_openings(source_list_opening_id);
+
 create table if not exists room_members (
   room_id uuid not null references rooms(id) on delete cascade,
   user_uuid text not null,
@@ -81,15 +101,18 @@ alter table room_members add column if not exists avatar_url text;
 create table if not exists ratings (
   id uuid primary key default gen_random_uuid(),
   room_id uuid not null references rooms(id) on delete cascade,
-  list_opening_id uuid not null references list_openings(id) on delete cascade,
+  list_opening_id uuid references list_openings(id) on delete set null,
+  room_opening_id uuid references room_openings(id) on delete cascade,
   user_uuid text not null,
   user_id uuid references app_users(id) on delete cascade,
   score numeric(3,1) not null check (score between 1 and 10 and mod(score * 10, 5) = 0),
   submitted_at timestamptz not null default now(),
-  unique (room_id, list_opening_id, user_uuid)
+  unique (room_id, list_opening_id, user_uuid),
+  unique (room_id, room_opening_id, user_uuid)
 );
 
 create index if not exists idx_ratings_room_opening on ratings(room_id, list_opening_id);
+create index if not exists idx_ratings_room_room_opening on ratings(room_id, room_opening_id);
 
 create table if not exists room_messages (
   id uuid primary key default gen_random_uuid(),
@@ -105,7 +128,8 @@ create index if not exists idx_room_messages_room_created on room_messages(room_
 create table if not exists room_rankings (
   id uuid primary key default gen_random_uuid(),
   room_id uuid not null references rooms(id) on delete cascade,
-  list_opening_id uuid not null references list_openings(id) on delete cascade,
+  list_opening_id uuid references list_openings(id) on delete set null,
+  room_opening_id uuid references room_openings(id) on delete cascade,
   ranking_type text not null check (ranking_type in ('group', 'personal')),
   user_uuid text,
   user_id uuid references app_users(id) on delete cascade,
@@ -114,6 +138,7 @@ create table if not exists room_rankings (
 );
 
 create index if not exists idx_room_rankings_room on room_rankings(room_id, ranking_type);
+create index if not exists idx_room_rankings_room_opening on room_rankings(room_id, room_opening_id);
 
 alter table app_users enable row level security;
 alter table app_user_credentials enable row level security;
@@ -121,6 +146,7 @@ alter table app_user_sessions enable row level security;
 alter table lists enable row level security;
 alter table list_openings enable row level security;
 alter table rooms enable row level security;
+alter table room_openings enable row level security;
 alter table room_members enable row level security;
 alter table ratings enable row level security;
 alter table room_messages enable row level security;
@@ -181,6 +207,19 @@ create policy rooms_read_all on rooms
 
 drop policy if exists rooms_write_blocked on rooms;
 create policy rooms_write_blocked on rooms
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+drop policy if exists room_openings_read_all on room_openings;
+create policy room_openings_read_all on room_openings
+  for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists room_openings_write_blocked on room_openings;
+create policy room_openings_write_blocked on room_openings
   for all
   to anon, authenticated
   using (false)

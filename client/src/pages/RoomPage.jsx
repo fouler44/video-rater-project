@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { apiDelete, apiPost } from "../lib/api";
+import { apiDelete, apiGet, apiPost } from "../lib/api";
 import { APP_ENV } from "../lib/env";
 import { getDefaultAvatar, getIdentity } from "../lib/identity";
 import { supabase } from "../lib/supabase";
@@ -704,16 +704,11 @@ export default function RoomPage() {
           return;
         }
 
-        const { data: openingsData, error: openingsError } = await supabase
-          .from("list_openings")
-          .select("*")
-          .eq("list_id", roomData.list_id)
-          .order("order_index", { ascending: true });
-
-        if (openingsError) throw openingsError;
+        const openingsPayload = await apiGet(`/api/rooms/${roomId}/openings`);
+        const openingsData = Array.isArray(openingsPayload.openings) ? openingsPayload.openings : [];
 
         if (!disposed) {
-          setOpenings(openingsData || []);
+          setOpenings(openingsData);
         }
 
         await upsertMyPresence();
@@ -767,7 +762,13 @@ export default function RoomPage() {
           const eventType = String(payload?.eventType || "").trim().toUpperCase();
           const nextRow = payload?.new || null;
           const previousRow = payload?.old || null;
-          const openingId = String(nextRow?.list_opening_id || previousRow?.list_opening_id || "").trim();
+          const openingId = String(
+            nextRow?.room_opening_id ||
+            previousRow?.room_opening_id ||
+            nextRow?.list_opening_id ||
+            previousRow?.list_opening_id ||
+            "",
+          ).trim();
           const userUuid = String(nextRow?.user_uuid || previousRow?.user_uuid || "").trim();
           const submittedAtRaw = nextRow?.submitted_at || previousRow?.submitted_at || payload?.commit_timestamp || null;
           const version = Number(new Date(submittedAtRaw || 0).getTime() || 0);
@@ -886,7 +887,7 @@ export default function RoomPage() {
         .select("score")
         .eq("room_id", roomId)
         .eq("user_uuid", identity.userId)
-        .eq("list_opening_id", currentOpening.id)
+        .eq("room_opening_id", currentOpening.id)
         .maybeSingle();
 
       if (!cancelled) {
@@ -1933,7 +1934,7 @@ export default function RoomPage() {
       .from("ratings")
       .select("user_uuid,score,submitted_at")
       .eq("room_id", roomId)
-      .eq("list_opening_id", openingId);
+      .eq("room_opening_id", openingId);
 
     if (!error) {
       const nextEntries = [];

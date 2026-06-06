@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { apiGet } from "../lib/api";
 import { getIdentity } from "../lib/identity";
 import { supabase } from "../lib/supabase";
 import { 
@@ -22,6 +23,12 @@ function formatScoreValue(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "-";
   return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1);
+}
+
+function rowMatchesOpening(row, opening) {
+  if (!row || !opening) return false;
+  if (row.room_opening_id) return row.room_opening_id === opening.id;
+  return Boolean(opening.source_list_opening_id && row.list_opening_id === opening.source_list_opening_id);
 }
 
 export default function RankingsPage() {
@@ -47,24 +54,19 @@ export default function RankingsPage() {
 
         if (roomError) throw roomError;
 
-        const { data: openingsData, error: openingsError } = await supabase
-          .from("list_openings")
-          .select("id,anime_title,opening_label,thumbnail_url,order_index")
-          .eq("list_id", roomData.list_id)
-          .order("order_index", { ascending: true });
-
-        if (openingsError) throw openingsError;
+        const openingsPayload = await apiGet(`/api/rooms/${roomId}/openings`);
+        const openingsData = Array.isArray(openingsPayload.openings) ? openingsPayload.openings : [];
 
         const { data: ratingsData, error: ratingsError } = await supabase
           .from("ratings")
-          .select("list_opening_id,user_uuid,score")
+          .select("room_opening_id,list_opening_id,user_uuid,score")
           .eq("room_id", roomId);
 
         if (ratingsError) throw ratingsError;
 
         const { data: rankingsData } = await supabase
           .from("room_rankings")
-          .select("list_opening_id,ranking_type,user_uuid,score")
+          .select("room_opening_id,list_opening_id,ranking_type,user_uuid,score")
           .eq("room_id", roomId);
 
         setRoom(roomData);
@@ -104,12 +106,12 @@ export default function RankingsPage() {
       return openings
         .map((opening) => {
           const group = storedRankings.find(
-            (item) => item.list_opening_id === opening.id && item.ranking_type === "group"
+            (item) => rowMatchesOpening(item, opening) && item.ranking_type === "group"
           );
 
           const me = storedRankings.find(
             (item) =>
-              item.list_opening_id === opening.id &&
+              rowMatchesOpening(item, opening) &&
               item.ranking_type === "personal" &&
               item.user_uuid === identity?.userId
           );
@@ -125,7 +127,7 @@ export default function RankingsPage() {
 
     return openings
       .map((opening) => {
-        const scoped = ratings.filter((r) => r.list_opening_id === opening.id);
+        const scoped = ratings.filter((r) => rowMatchesOpening(r, opening));
         const groupAvg = scoped.length
           ? scoped.reduce((sum, item) => sum + Number(item.score || 0), 0) / scoped.length
           : 0;

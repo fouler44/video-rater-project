@@ -33,7 +33,7 @@ type RoomStateResponse = {
   };
   openings: OpeningRow[];
   currentOpening: OpeningRow | null;
-  currentOpeningRatings: Array<{ user_uuid: string; score: number; list_opening_id: string }>;
+  currentOpeningRatings: Array<{ user_uuid: string; score: number; room_opening_id: string; list_opening_id: string | null }>;
   members: Array<{ user_uuid: string; display_name: string; avatar_url: string | null }>;
 };
 
