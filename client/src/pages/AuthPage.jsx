@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, User, AlertTriangle, CheckCircle2, X } from "lucide-react";
+import { ArrowLeft, KeyRound, User, AlertTriangle, CheckCircle2, X } from "lucide-react";
 import { apiPost } from "../lib/api";
 import { clearIdentity, getDefaultAvatar, getIdentity, patchIdentityUser, saveIdentity } from "../lib/identity";
 
@@ -11,8 +11,12 @@ export default function AuthPage() {
   const [avatarUrl, setAvatarUrl] = useState(identity?.avatarUrl || "");
   const [username, setUsername] = useState(identity?.username || "");
   const [password, setPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [authMode, setAuthMode] = useState("login");
   const [authLoading, setAuthLoading] = useState(false);
+  const [passwordLoading, setPasswordLoading] = useState(false);
   const [uiNotice, setUiNotice] = useState(null);
   const signedIn = Boolean(identity?.token && identity?.userId);
   const isRegisterMode = authMode === "register";
@@ -92,6 +96,9 @@ export default function AuthPage() {
     clearIdentity();
     setIdentity(null);
     setPassword("");
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
     setAuthMode("login");
     navigate("/");
   }
@@ -125,6 +132,45 @@ export default function AuthPage() {
       showNotice(err.message || "Could not save profile", "error");
     } finally {
       setAuthLoading(false);
+    }
+  }
+
+  async function changePassword() {
+    if (!identity?.token || !identity?.userId) {
+      showNotice("Login first to change your password", "warning");
+      return;
+    }
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      showNotice("Fill in all password fields", "warning");
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      showNotice("New password must be at least 6 characters", "warning");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      showNotice("New passwords do not match", "warning");
+      return;
+    }
+
+    setPasswordLoading(true);
+    try {
+      await apiPost("/api/auth/password", {
+        currentPassword,
+        newPassword,
+      });
+
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      showNotice("Password changed", "success");
+    } catch (err) {
+      showNotice(err.message || "Could not change password", "error");
+    } finally {
+      setPasswordLoading(false);
     }
   }
 
@@ -200,47 +246,87 @@ export default function AuthPage() {
             </div>
 
             {identity ? (
-              <div className="mb-5 rounded-2xl border border-slate-700/70 bg-slate-900/55 p-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-bold uppercase tracking-[0.12em] text-slate-300">Profile</h3>
-                  <span className="text-xs text-slate-500">Shown in room roster and chat</span>
-                </div>
-
-                <div className="flex items-center gap-3 mb-3">
-                  <img
-                    src={avatarUrl.trim() || getDefaultAvatar(displayName)}
-                    alt="Avatar preview"
-                    className="w-12 h-12 rounded-full object-cover border border-slate-700 bg-slate-900"
-                    referrerPolicy="no-referrer"
-                  />
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-slate-100">{displayName.trim() || "Unnamed Player"}</p>
-                    <p className="text-xs text-slate-500">{username ? `@${username}` : "Signed in"}</p>
+              <div className="mb-5 space-y-4">
+                <div className="rounded-2xl border border-slate-700/70 bg-slate-900/55 p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-bold uppercase tracking-[0.12em] text-slate-300">Profile</h3>
+                    <span className="text-xs text-slate-500">Shown in room roster and chat</span>
                   </div>
-                </div>
 
-                <div className="space-y-2">
-                  <div className="relative">
-                    <input
-                      value={displayName}
-                      onChange={(e) => setDisplayName(e.target.value)}
-                      placeholder="Display name"
-                      className="pl-10"
+                  <div className="flex items-center gap-3 mb-3">
+                    <img
+                      src={avatarUrl.trim() || getDefaultAvatar(displayName)}
+                      alt="Avatar preview"
+                      className="w-12 h-12 rounded-full object-cover border border-slate-700 bg-slate-900"
+                      referrerPolicy="no-referrer"
                     />
-                    <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-slate-100">{displayName.trim() || "Unnamed Player"}</p>
+                      <p className="text-xs text-slate-500">{username ? `@${username}` : "Signed in"}</p>
+                    </div>
                   </div>
-                  <input
-                    value={avatarUrl}
-                    onChange={(e) => setAvatarUrl(e.target.value)}
-                    placeholder="Avatar URL (optional)"
-                  />
-                  <button
-                    className="btn-secondary w-full"
-                    onClick={saveProfile}
-                    disabled={authLoading || !displayName.trim()}
-                  >
-                    {authLoading ? "Saving..." : "Save profile"}
-                  </button>
+
+                  <div className="space-y-2">
+                    <div className="relative">
+                      <input
+                        value={displayName}
+                        onChange={(e) => setDisplayName(e.target.value)}
+                        placeholder="Display name"
+                        className="pl-10"
+                      />
+                      <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                    </div>
+                    <input
+                      value={avatarUrl}
+                      onChange={(e) => setAvatarUrl(e.target.value)}
+                      placeholder="Avatar URL (optional)"
+                    />
+                    <button
+                      className="btn-secondary w-full"
+                      onClick={saveProfile}
+                      disabled={authLoading || !displayName.trim()}
+                    >
+                      {authLoading ? "Saving..." : "Save profile"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-700/70 bg-slate-950/35 p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-bold uppercase tracking-[0.12em] text-slate-300">Password</h3>
+                    <KeyRound className="w-4 h-4 text-slate-500" />
+                  </div>
+
+                  <div className="space-y-2">
+                    <input
+                      type="password"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      placeholder="Current password"
+                      autoComplete="current-password"
+                    />
+                    <input
+                      type="password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="New password"
+                      autoComplete="new-password"
+                    />
+                    <input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Confirm new password"
+                      autoComplete="new-password"
+                    />
+                    <button
+                      className="btn-secondary w-full"
+                      onClick={changePassword}
+                      disabled={passwordLoading || !currentPassword || !newPassword || !confirmPassword}
+                    >
+                      {passwordLoading ? "Changing..." : "Change password"}
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : null}

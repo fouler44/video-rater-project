@@ -30,3 +30,11 @@ Thumbs.db
 # Local analysis artifacts (never commit)
 tmp_openings_missing_youtube_links.*
 .tmp_build_*youtube_links.js
+client_secret_*.json
+youtube-playlist-*.md
+server/src/scripts/appendMissingListOpeningsToRoom.mjs
+server/src/scripts/checkListOpeningsSummary.mjs
+server/src/scripts/enrichRestoredMalTopList.mjs
+server/src/scripts/inspectRoomOpeningsRecovery.mjs
+server/src/scripts/restoreListFromRoomOpeningsAndMarkdown.mjs
+server/src/scripts/restoreListOpeningsFromMarkdown.mjs

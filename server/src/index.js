@@ -560,6 +560,10 @@ function mapListOpeningToRoomOpening(roomId, opening, index) {
   };
 }
 
+function getOpeningSyncKey(opening) {
+  return `${opening.anime_id}::${normalizeLabelForThemeMatch(opening.opening_label)}`;
+}
+
 async function copyListOpeningsToRoom(roomId, listId) {
   const sourceOpenings = await fetchListOpenings(listId);
   if (sourceOpenings.length === 0) return [];
@@ -578,6 +582,114 @@ async function copyListOpeningsToRoom(roomId, listId) {
   }
 
   return rows;
+}
+
+async function syncListOpeningsToExistingRooms(listId) {
+  const sourceOpenings = await fetchListOpenings(listId);
+  if (sourceOpenings.length === 0) return { roomsSynced: 0, openingsInserted: 0, openingsRelinked: 0 };
+
+  const { data: rooms, error: roomsError } = await supabaseAdmin
+    .from("rooms")
+    .select("id")
+    .eq("list_id", listId)
+    .neq("status", "finished");
+
+  if (roomsError) {
+    throw new Error(roomsError.message || "Could not load rooms for list sync");
+  }
+
+  const roomIds = (rooms || []).map((room) => room.id).filter(Boolean);
+  if (roomIds.length === 0) return { roomsSynced: 0, openingsInserted: 0, openingsRelinked: 0 };
+
+  const { data: roomOpenings, error: roomOpeningsError } = await supabaseAdmin
+    .from("room_openings")
+    .select(ROOM_OPENING_SELECT)
+    .in("room_id", roomIds)
+    .order("order_index", { ascending: true });
+
+  if (roomOpeningsError) {
+    throw new Error(roomOpeningsError.message || "Could not load room openings for list sync");
+  }
+
+  const currentSourceIds = new Set(sourceOpenings.map((opening) => opening.id));
+  const sourceOpeningsByKey = new Map();
+  for (const opening of sourceOpenings) {
+    const key = getOpeningSyncKey(opening);
+    if (!sourceOpeningsByKey.has(key)) sourceOpeningsByKey.set(key, []);
+    sourceOpeningsByKey.get(key).push(opening);
+  }
+
+  const roomOpeningsByRoomId = new Map();
+  for (const opening of roomOpenings || []) {
+    if (!roomOpeningsByRoomId.has(opening.room_id)) roomOpeningsByRoomId.set(opening.room_id, []);
+    roomOpeningsByRoomId.get(opening.room_id).push(opening);
+  }
+
+  let openingsInserted = 0;
+  let openingsRelinked = 0;
+
+  for (const roomId of roomIds) {
+    const existingOpenings = roomOpeningsByRoomId.get(roomId) || [];
+    const usedSourceIds = new Set(
+      existingOpenings
+        .map((opening) => opening.source_list_opening_id)
+        .filter((sourceId) => sourceId && currentSourceIds.has(sourceId)),
+    );
+
+    const relinkUpdates = [];
+    for (const roomOpening of existingOpenings) {
+      if (roomOpening.source_list_opening_id && currentSourceIds.has(roomOpening.source_list_opening_id)) {
+        continue;
+      }
+
+      const candidates = sourceOpeningsByKey.get(getOpeningSyncKey(roomOpening)) || [];
+      const matchingSource = candidates.find((opening) => !usedSourceIds.has(opening.id));
+      if (!matchingSource) continue;
+
+      usedSourceIds.add(matchingSource.id);
+      relinkUpdates.push({ roomOpeningId: roomOpening.id, sourceOpeningId: matchingSource.id });
+    }
+
+    for (const update of relinkUpdates) {
+      const { error: updateError } = await supabaseAdmin
+        .from("room_openings")
+        .update({ source_list_opening_id: update.sourceOpeningId })
+        .eq("id", update.roomOpeningId);
+
+      if (updateError) {
+        throw new Error(updateError.message || "Could not relink room opening to source list opening");
+      }
+    }
+
+    openingsRelinked += relinkUpdates.length;
+
+    const maxOrderIndex = existingOpenings.reduce(
+      (max, opening) => Math.max(max, Number(opening.order_index || 0)),
+      -1,
+    );
+
+    const rowsToInsert = sourceOpenings
+      .filter((opening) => !usedSourceIds.has(opening.id))
+      .map((opening, index) => ({
+        ...mapListOpeningToRoomOpening(roomId, opening, index),
+        order_index: maxOrderIndex + index + 1,
+      }));
+
+    if (rowsToInsert.length === 0) continue;
+
+    for (let start = 0; start < rowsToInsert.length; start += BULK_INSERT_CHUNK_SIZE) {
+      const chunk = rowsToInsert.slice(start, start + BULK_INSERT_CHUNK_SIZE);
+      const { error: insertError } = await supabaseAdmin.from("room_openings").insert(chunk);
+
+      if (insertError) {
+        throw new Error(insertError.message || "Could not append new list openings to room queues");
+      }
+    }
+
+    openingsInserted += rowsToInsert.length;
+  }
+
+  return { roomsSynced: roomIds.length, openingsInserted, openingsRelinked };
 }
 
 async function fetchRoomOpenings(roomId, listId = "") {
@@ -954,6 +1066,59 @@ app.post("/api/auth/profile", async (req, res) => {
   res.json({ user: mapUser(data) });
 });
 
+app.post("/api/auth/password", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const currentPassword = String(req.body?.currentPassword || "");
+  const nextPassword = String(req.body?.newPassword || "");
+
+  if (!currentPassword || !nextPassword) {
+    return res.status(400).json({ error: "Current and new password are required" });
+  }
+
+  if (nextPassword.length < 6) {
+    return res.status(400).json({ error: "New password must be at least 6 characters" });
+  }
+
+  if (currentPassword === nextPassword) {
+    return res.status(400).json({ error: "New password must be different" });
+  }
+
+  const { data: credential, error: credentialError } = await supabaseAdmin
+    .from("app_user_credentials")
+    .select("password_hash")
+    .eq("user_id", auth.user.id)
+    .maybeSingle();
+
+  if (credentialError) return res.status(500).json({ error: credentialError.message });
+  if (!credential || !verifyPassword(credential.password_hash, currentPassword)) {
+    return res.status(401).json({ error: "Current password is incorrect" });
+  }
+
+  const { error: updateError } = await supabaseAdmin
+    .from("app_user_credentials")
+    .update({
+      password_hash: hashPassword(nextPassword),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", auth.user.id);
+
+  if (updateError) return res.status(500).json({ error: updateError.message });
+
+  const { error: sessionError } = await supabaseAdmin
+    .from("app_user_sessions")
+    .delete()
+    .eq("user_id", auth.user.id)
+    .neq("token", auth.token);
+
+  if (sessionError) return res.status(500).json({ error: sessionError.message });
+
+  res.json({ passwordChanged: true, otherSessionsRevoked: true });
+});
+
 app.post("/api/auth/logout", async (req, res) => {
   if (!ensureSupabase(res)) return;
 
@@ -1152,6 +1317,8 @@ app.post("/api/lists/save", async (req, res) => {
       const { error: insertError } = await supabaseAdmin.from("list_openings").insert(rows);
       if (insertError) return internalError(req, res, insertError, "list_openings_insert_failed");
     }
+
+    await syncListOpeningsToExistingRooms(listId);
 
     return res.status(201).json({ list: { id: listId, name: input.name } });
   } catch (error) {
